@@ -3,11 +3,11 @@
 ## Phase A — ingest
 
 ```text
-data source
+data source (file, folder, glob, Zarr)
   ↓
 xarray
   ↓
-schema validation
+schema validation      python -m fngft inspect --config CONFIG
 ```
 
 ## Phase B — construct the learning state
@@ -57,7 +57,14 @@ X(t) → X(t+1) → X(t+2) → ...
 
 ## Phase G — evaluate
 
-Evaluate both forecast skill and structural behavior.
+Evaluate both forecast skill and structural behavior:
+
+```bash
+python -m fngft evaluate --config CONFIG --checkpoint CKPT --split test --steps 4 --output artifacts/eval_test.json
+```
+
+The report compares every variable and lead time with persistence and climatology. A model that does not beat
+persistence has not learned anything useful yet.
 
 ## Phase H — only then add SGS data
 

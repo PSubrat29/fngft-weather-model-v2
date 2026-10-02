@@ -1,27 +1,38 @@
+# FNGFT-AI configuration template for your own historical dataset.
+# Edit the values marked EDIT, then run:  python -m fngft inspect --config configs/real_data.yaml
+
 data:
-  # Replace this with your real dataset file, Zarr store, GRIB file, or a directory
-  # containing sequentially arriving files.
-  source: /path/to/your/realtime_weather_data
-  format: auto
-  engine: null
+  # EDIT: one NetCDF/GRIB file, a folder of files (combined along time), a glob such as
+  # "D:/weather/era5_*.nc", or a Zarr store. Forward slashes also work on Windows.
+  source: /path/to/your/historical_weather_data
+  format: auto            # auto | netcdf | zarr | grib
+  engine: null            # xarray engine override (e.g. netcdf4, h5netcdf, cfgrib)
+  # EDIT: dimension names exactly as they appear in your files (see `inspect` errors for the list).
   time_dim: time
   lat_dim: lat
   lon_dim: lon
+  # EDIT: map the four model channels to your variable names.
+  # u, v must be winds in m/s; theta is temperature (K or degC); q is humidity (any consistent unit).
   variables:
     u: u10
     v: v10
-    theta: theta2m
+    theta: t2m
     q: q2m
+  # For multi-level data choose one level, e.g. level_dim: level, level_value: 850
   level_dim: null
   level_value: null
-  time_step_hours: null
-  train_start: "2024-01-01"
-  train_end: "2025-12-31T23:59:59"
-  val_start: "2026-01-01"
-  val_end: "2026-06-30T23:59:59"
-  test_start: "2026-07-01"
-  test_end: "2026-09-30T23:59:59"
-  longitude_periodic: true
+  time_step_hours: null   # null = inferred from the data
+  # EDIT: chronological, non-overlapping splits inside your data period.
+  train_start: "2015-01-01"
+  train_end: "2019-12-31T23:59:59"
+  val_start: "2020-01-01"
+  val_end: "2020-12-31T23:59:59"
+  test_start: "2021-01-01"
+  test_end: "2021-12-31T23:59:59"
+  longitude_periodic: null   # null = auto (true only when longitude covers 360 degrees)
+  region: null               # e.g. {lat_min: 5, lat_max: 40, lon_min: 65, lon_max: 100}
+  coarsen: 1                 # e.g. 4 turns a 0.25 deg grid into 1 deg (less memory, faster)
+  missing_values: error      # error | interpolate
 
 model:
   in_channels: 4
@@ -36,24 +47,26 @@ model:
   beta_max: 0.99
   basis_orders: 8
   operator_sigma: 0.85
-  dt_hours: 1.0
-  coriolis_scale: 1.0
+  dt_hours: null             # null = inferred from the data
+  coriolis_scale: 0.0        # see fngft/physics.md before enabling
   stratification_scale: 0.10
   diffusion_scale: 0.0001
-  closure_scale: 0.05
+  closure_scale: 1.0
   fractional_scale: 0.01
-  residual_scale: 0.02
+  residual_scale: 1.0
 
 training:
-  batch_size: 4
-  epochs: 5
-  learning_rate: 0.0002
+  batch_size: 8
+  epochs: 20
+  learning_rate: 0.001
   weight_decay: 0.0001
   grad_clip: 1.0
   rollout_steps: 1
   num_workers: 0
   max_train_windows: null
-  max_val_windows: 256
+  max_val_windows: 512
   seed: 42
-  device: auto
+  device: auto               # auto | cpu | cuda
   checkpoint: artifacts/fngft_real.pt
+  lr_schedule: cosine        # cosine | constant
+  early_stopping_patience: 5

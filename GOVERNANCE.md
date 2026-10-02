@@ -25,7 +25,7 @@ Every checkpoint should be tied to:
 - training hardware
 - dependency environment
 
-The bundled checkpoint format already stores the model configuration, data mapping, normalization statistics and grid.
+Every checkpoint already stores the model configuration (including the inferred time step), data mapping and units, normalization statistics, grid, training configuration and per-epoch history, plus provenance: creation time, package and PyTorch versions, git revision, data period and device. Store the `evaluate` JSON report next to it.
 
 ## 3. Scientific promotion gates
 
@@ -33,7 +33,7 @@ A checkpoint should not be promoted because RMSE improved alone.
 
 Minimum evidence should include:
 
-- held-out temporal skill
+- held-out temporal skill that beats persistence and climatology (`python -m fngft evaluate --steps N`)
 - spatial/gradient skill
 - spectral behavior
 - long-rollout stability

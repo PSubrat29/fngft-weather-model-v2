@@ -1,12 +1,19 @@
 numpy>=2.0
 pandas>=2.2
 PyYAML>=6.0
-xarray>=2026.1
-fsspec>=2026.1
+xarray>=2024.6
+fsspec>=2024.6
+dask>=2024.6
 scipy>=1.14
+netCDF4>=1.7
+h5netcdf>=1.3
+zarr>=2.18
 torch>=2.5
 fastapi>=0.115
 uvicorn>=0.32
 pydantic>=2.8
+httpx>=0.27
 pytest>=8.0
-# Optional GRIB support: install a compatible cfgrib/ecCodes environment.
+# Optional:
+#   GRIB files:            pip install cfgrib   (needs ecCodes; easiest via conda-forge)
+#   ERA5 sample download:  pip install gcsfs

@@ -2,36 +2,19 @@
 
 ## Purpose
 
-Provides a single command-line interface to the real-data workflow.
+Single command-line interface to the real-data workflow. Run it as `python -m fngft …`,
+`python -m fngft.cli …` or (after `pip install -e .`) `fngft …`.
 
 ## Commands
 
-### Inspect
-
 ```bash
-python -m fngft.cli inspect --config configs/real_data.yaml
+python -m fngft demo                                   # synthetic end-to-end installation check
+python -m fngft inspect  --config CONFIG [--latest]    # validate and profile the dataset
+python -m fngft train    --config CONFIG [--epochs N] [--device cpu|cuda] [--checkpoint PATH]
+python -m fngft evaluate --config CONFIG --checkpoint CKPT [--split test] [--steps 4] [--output report.json]
+python -m fngft forecast-latest --config CONFIG --checkpoint CKPT [--steps 6] [--output forecast.nc]
+python -m fngft serve    --checkpoint CKPT [--config CONFIG] [--host 0.0.0.0] [--port 8080]
 ```
 
-Validates and profiles the dataset.
-
-### Train
-
-```bash
-python -m fngft.cli train --config configs/real_data.yaml
-```
-
-Trains and writes the configured checkpoint.
-
-### Evaluate
-
-```bash
-python -m fngft.cli evaluate --config configs/real_data.yaml --checkpoint artifacts/fngft_real.pt --split test
-```
-
-### Forecast newest data
-
-```bash
-python -m fngft.cli forecast-latest --config configs/real_data.yaml --checkpoint artifacts/fngft_real.pt --steps 4
-```
-
-The CLI keeps the operational path explicit and reproducible.
+The CLI keeps the operational path explicit and reproducible. v0.2's CLI could not start at all:
+`train.py` imported Python's standard-library `io` module instead of `fngft.io`.

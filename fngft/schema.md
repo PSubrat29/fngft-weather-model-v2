@@ -6,30 +6,26 @@ Defines and validates the real-data contract before model training or forecastin
 
 ## Required dataset structure
 
-The minimum xarray dataset must contain:
-
 ```text
-time
-lat
-lon
-u-variable
-v-variable
-theta-variable
-q-variable
+time, lat, lon dimensions (names configurable)
+four variables mapped to u, v, theta, q, each containing time/lat/lon
 ```
-
-The source variable names can be different; `DataConfig.variables` maps them to the four canonical channels.
 
 ## Validation steps
 
-1. Check required dimensions.
-2. Check required variables.
-3. Check that every state variable uses time/latitude/longitude dimensions.
-4. Check strictly increasing time.
-5. Check approximately regular time spacing.
-6. Check one-dimensional latitude and longitude coordinates.
-7. Check coordinate finiteness.
+1. Required dimensions exist (the error lists the available ones).
+2. Required variables exist (the error lists the available ones).
+3. Each state variable contains time/lat/lon; any other dimension must be the configured
+   `level_dim` or have size 1.
+4. Time decodes to datetime64, is strictly increasing and has a fixed step. Missing timestamps
+   (gaps that are whole multiples of the step) are allowed and counted; other irregular spacing is
+   rejected.
+5. Latitude/longitude are 1-D, finite, strictly monotonic (ascending or descending) and regular.
+
+The profile also reports whether longitude spans the full circle (`longitude_global`) and the units
+attribute of each variable.
 
 ## Reason
 
-Weather ML can silently fail when time steps are irregular, dimensions are transposed, or a variable contains missing values. Validation therefore happens before tensors reach PyTorch.
+Weather ML can silently fail when time steps are irregular, dimensions are transposed, or a variable
+contains missing values. Validation therefore happens before tensors reach PyTorch.

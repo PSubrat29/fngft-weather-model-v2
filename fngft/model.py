@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 import torch
 from torch import Tensor, nn
@@ -17,6 +17,9 @@ class MemoryTransformer(nn.Module):
     def __init__(self, cfg: ModelConfig):
         super().__init__()
         self.input = nn.Linear(cfg.in_channels, cfg.memory_dim)
+        # Learned positional embedding: without it self-attention ignores the order of the history.
+        self.position = nn.Parameter(torch.zeros(1, cfg.history, cfg.memory_dim))
+        nn.init.normal_(self.position, std=0.02)
         layer = nn.TransformerEncoderLayer(
             d_model=cfg.memory_dim,
             nhead=cfg.memory_heads,
@@ -25,12 +28,12 @@ class MemoryTransformer(nn.Module):
             activation="gelu",
             norm_first=False,
         )
-        self.encoder = nn.TransformerEncoder(layer, num_layers=cfg.memory_layers)
+        self.encoder = nn.TransformerEncoder(layer, num_layers=cfg.memory_layers, enable_nested_tensor=False)
         self.norm = nn.LayerNorm(cfg.memory_dim)
 
     def forward(self, history: Tensor) -> Tensor:
         pooled = history.mean(dim=(-1, -2))
-        x = self.input(pooled)
+        x = self.input(pooled) + self.position[:, -pooled.shape[1] :]
         x = self.encoder(x)
         return self.norm(x[:, -1])
 
@@ -60,8 +63,28 @@ class OrderHead(nn.Module):
         return {"alpha": alpha, "beta": beta, "kappa": kappa}
 
 
+def _index_divergence(fx: Tensor, fy: Tensor, periodic_x: bool) -> Tensor:
+    """Flux divergence in grid-index units (per forecast step, standardized units)."""
+    if periodic_x:
+        dx = (torch.roll(fx, shifts=-1, dims=-1) - torch.roll(fx, shifts=1, dims=-1)) * 0.5
+    else:
+        dx = torch.cat(
+            [fx[..., 1:2] - fx[..., 0:1], (fx[..., 2:] - fx[..., :-2]) * 0.5, fx[..., -1:] - fx[..., -2:-1]], dim=-1
+        )
+    dy = torch.cat(
+        [fy[..., 1:2, :] - fy[..., 0:1, :], (fy[..., 2:, :] - fy[..., :-2, :]) * 0.5, fy[..., -1:, :] - fy[..., -2:-1, :]],
+        dim=-2,
+    )
+    return dx + dy
+
+
 class FractionalClosure(nn.Module):
-    """Learned fractional closure added to the explicit physics branch."""
+    """Learned fractional closure added to the explicit physics branch.
+
+    The closure is a per-step increment in standardized units. The learned residual output layers
+    start at zero, so an untrained model equals physics + fractional damping and training grows the
+    correction from there.
+    """
 
     def __init__(self, cfg: ModelConfig):
         super().__init__()
@@ -74,6 +97,7 @@ class FractionalClosure(nn.Module):
             beta_max=cfg.beta_max,
             basis_orders=cfg.basis_orders,
             sigma=cfg.operator_sigma,
+            periodic_x=cfg.longitude_periodic,
         )
         self.feature = nn.Sequential(
             nn.Conv2d(cfg.in_channels + cfg.memory_dim, cfg.hidden, 3, padding=1),
@@ -83,15 +107,14 @@ class FractionalClosure(nn.Module):
         )
         self.force = nn.Conv2d(cfg.hidden, 2, 1)
         self.scalar_flux = nn.Conv2d(cfg.hidden, 4, 1)
+        for layer in (self.force, self.scalar_flux):
+            nn.init.zeros_(layer.weight)
+            nn.init.zeros_(layer.bias)
 
-    @staticmethod
-    def divergence_flux(fx: Tensor, fy: Tensor, lat_deg: Tensor, lon_deg: Tensor) -> Tensor:
-        from .physics import spherical_grad
-        gx, _ = spherical_grad(fx, lat_deg, lon_deg)
-        _, gy = spherical_grad(fy, lat_deg, lon_deg)
-        return gx + gy
+    def divergence_flux(self, fx: Tensor, fy: Tensor) -> Tensor:
+        return _index_divergence(fx, fy, self.cfg.longitude_periodic)
 
-    def forward(self, history: Tensor, memory: Tensor, orders: Dict[str, Tensor], lat_deg: Tensor, lon_deg: Tensor) -> Tuple[Tensor, Dict[str, Tensor]]:
+    def forward(self, history: Tensor, memory: Tensor, orders: Dict[str, Tensor]) -> Tuple[Tensor, Dict[str, Tensor]]:
         alpha, beta, kappa = orders["alpha"], orders["beta"], orders["kappa"]
         frac = self.memory_op(history, alpha, beta)
         current = history[:, -1]
@@ -106,8 +129,8 @@ class FractionalClosure(nn.Module):
         theta_fy = self.cfg.residual_scale * flux_resid[:, 1:2]
         q_fx = q_base + self.cfg.residual_scale * flux_resid[:, 2:3]
         q_fy = self.cfg.residual_scale * flux_resid[:, 3:4]
-        theta_t = -self.divergence_flux(theta_fx, theta_fy, lat_deg, lon_deg)
-        q_t = -self.divergence_flux(q_fx, q_fy, lat_deg, lon_deg)
+        theta_t = -self.divergence_flux(theta_fx, theta_fy)
+        q_t = -self.divergence_flux(q_fx, q_fy)
         closure = torch.cat([momentum, theta_t, q_t], dim=1)
         return closure, {
             "fractional_response": frac,
@@ -120,10 +143,19 @@ class FractionalClosure(nn.Module):
 
 
 class FNGFTWeatherModel(nn.Module):
-    """Top-level real-data prototype: memory + dynamic orders + fractional closure + physics."""
+    """Top-level real-data prototype: memory + dynamic orders + fractional closure + physics.
+
+    The model consumes and produces standardized states. The physics branch runs in physical units
+    using the training normalization statistics stored in the ``state_mean``/``state_std`` buffers
+    (saved with the checkpoint).
+    """
 
     def __init__(self, cfg: ModelConfig):
         super().__init__()
+        if cfg.dt_hours is None or cfg.dt_hours <= 0:
+            raise ValueError("ModelConfig.dt_hours must be a positive number of hours (training infers it from the data)")
+        if cfg.in_channels != 4:
+            raise ValueError("ModelConfig.in_channels must be 4 (u, v, theta, q)")
         self.cfg = cfg
         self.memory = MemoryTransformer(cfg)
         self.order_head = OrderHead(cfg)
@@ -134,18 +166,33 @@ class FNGFTWeatherModel(nn.Module):
                 coriolis_scale=cfg.coriolis_scale,
                 stratification_scale=cfg.stratification_scale,
                 diffusion_scale=cfg.diffusion_scale,
+                periodic_x=cfg.longitude_periodic,
             )
         )
+        self.register_buffer("state_mean", torch.zeros(cfg.in_channels))
+        self.register_buffer("state_std", torch.ones(cfg.in_channels))
+
+    def set_normalization(self, mean: Sequence[float], std: Sequence[float]) -> None:
+        self.state_mean.copy_(torch.as_tensor(mean, dtype=self.state_mean.dtype))
+        self.state_std.copy_(torch.as_tensor(std, dtype=self.state_std.dtype))
+
+    def to_physical(self, standardized: Tensor) -> Tensor:
+        return standardized * self.state_std.view(1, -1, 1, 1) + self.state_mean.view(1, -1, 1, 1)
+
+    def to_standardized(self, physical: Tensor) -> Tensor:
+        return (physical - self.state_mean.view(1, -1, 1, 1)) / self.state_std.view(1, -1, 1, 1)
 
     def step(self, history: Tensor, lat_deg: Tensor, lon_deg: Tensor) -> tuple[Tensor, Dict[str, Tensor]]:
         if history.ndim != 5:
             raise ValueError("history must have shape [batch,time,channel,lat,lon]")
         if history.shape[1] != self.cfg.history:
             raise ValueError(f"Expected history={self.cfg.history}, got {history.shape[1]}")
+        if history.shape[-2] != lat_deg.numel() or history.shape[-1] != lon_deg.numel():
+            raise ValueError("lat/lon lengths do not match the history grid")
         memory = self.memory(history)
         orders = self.order_head(history[:, -1], memory)
-        closure, diagnostics = self.closure(history, memory, orders, lat_deg, lon_deg)
-        physical = self.physics(history[:, -1], lat_deg, lon_deg)
+        closure, diagnostics = self.closure(history, memory, orders)
+        physical = self.to_standardized(self.physics(self.to_physical(history[:, -1]), lat_deg, lon_deg))
         next_state = physical + self.cfg.closure_scale * closure
         diagnostics.update(orders)
         diagnostics["memory"] = memory
@@ -164,3 +211,11 @@ class FNGFTWeatherModel(nn.Module):
             preds.append(pred)
             current = torch.cat([current[:, 1:], pred.unsqueeze(1)], dim=1)
         return torch.stack(preds, dim=1), last_info
+
+
+def build_model(model_config: dict, normalizer: Optional[dict] = None) -> FNGFTWeatherModel:
+    """Recreate a model from the ``model_config`` dict stored in a checkpoint."""
+    model = FNGFTWeatherModel(ModelConfig(**model_config))
+    if normalizer is not None:
+        model.set_normalization(normalizer["mean"], normalizer["std"])
+    return model

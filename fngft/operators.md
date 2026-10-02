@@ -9,22 +9,25 @@ Implements the two mathematical components that make the prototype FNGFT-specifi
 
 ## Spatial operator
 
-The prototype computes an FFT representation and applies a spectral multiplier proportional to:
+The field is mirrored across the latitude boundaries (and across the longitude boundaries for
+regional grids) before the FFT. The spectral multiplier is
 
-`k^(alpha)`
+`|k̂|^alpha`,  with `|k̂|² = (k_y² + k_x²) / (2π²) ∈ [0, 1]`
 
-A small bank of alpha basis operators is combined with positive weights derived from the learned local alpha field.
+i.e. wavenumbers normalised to the grid's Nyquist range. The response is therefore bounded and does not
+grow with grid resolution (v0.2 used integer wavenumbers, giving multipliers up to ~10⁶ on a
+0.25° grid). A bank of fixed orders between `alpha_min` and `alpha_max` is combined with positive
+Gaussian weights derived from the local alpha field.
 
-This is a numerical approximation, not an exact variable-coefficient fractional pseudodifferential operator.
+This is a numerical approximation, not an exact variable-coefficient fractional pseudodifferential
+operator.
 
 ## Temporal memory
 
-For historical lags `tau`, the weighting behaves like:
+For historical lags `tau`, `w(tau) ∝ tau^(-beta)`, normalised across the history. All history steps
+share one alpha field, so the spatial operator is applied to the whole history in one batched call.
 
-`w(tau) ∝ tau^(-beta)`
+## Limitation
 
-with normalization across the available history.
-
-## Real-data limitation
-
-The FFT formulation is periodic in both spatial directions. Longitude periodicity is natural on a global longitude axis, but latitude is not periodic. Therefore this module is suitable for research on a regular patch/grid, but a production global implementation needs a sphere-aware fractional operator.
+The mirrored-FFT formulation is a regular-grid approximation. A production global implementation
+needs a sphere-aware fractional operator.

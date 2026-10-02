@@ -8,27 +8,29 @@ Converts a validated xarray weather dataset into the tensor representation expec
 
 ```text
 xarray Dataset
-    ↓
-optional vertical level selection
-    ↓
-transpose to [time, lat, lon]
-    ↓
-stack canonical channels
-    ↓
-[time, 4, lat, lon]
-    ↓
-standardize using training-period statistics
-    ↓
+    ↓ keep only the four mapped variables
+    ↓ optional vertical level selection (level_dim / level_value)
+    ↓ optional crop to the configured split period (training/evaluation only)
+    ↓ optional region crop (lon given as -180..180 or 0..360)
+    ↓ sort latitude and longitude ascending
+    ↓ optional coarsening (block mean)
+    ↓ squeeze size-1 extra dimensions, transpose to [time, lat, lon]
+    ↓ optional missing-value filling
+[time, 4, lat, lon] float32
+    ↓ standardize with training-period statistics
 temporal windows
 ```
 
 ## Standardization
 
-For each variable:
+For each variable `z = (x - mean_train) / std_train`. Statistics come only from the configured
+training period. The statistics are saved in the checkpoint and inside the model, which uses them to
+run its physics branch in physical units.
 
-`z = (x - mean_train) / std_train`
+## Missing values
 
-Statistics are calculated only from the configured training period. Validation and test periods never influence those statistics.
+`missing_values: error` stops with a clear message. `interpolate` fills gaps linearly in time per grid
+point; points that are never valid (for example a land mask) get the training-period mean.
 
 ## `TemporalWindowDataset`
 
@@ -39,8 +41,11 @@ history: [t-7 ... t]
 future:  [t+1, t+2, t+3]
 ```
 
-This prevents random row shuffling from destroying temporal order and supports multi-step rollout training.
+Windows that cross a missing timestamp are skipped. `max_windows` subsamples evenly across the split
+(not just the first windows).
 
 ## Split-window rule
 
-A split boundary applies to the forecast target, while the history may reach backward into earlier data. This is intentional: the model is allowed to know the recent past when predicting the first target inside a validation/test interval, but it is not allowed to use future target data.
+A split boundary applies to the forecast target, while the history may reach backward into earlier
+data. The model may know the recent past when predicting the first target inside a validation/test
+interval, but never future target data.

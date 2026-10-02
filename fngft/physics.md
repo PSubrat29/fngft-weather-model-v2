@@ -4,32 +4,43 @@
 
 Provides the explicit known-physics branch used by the hybrid model.
 
-## Why it exists
+## Units
 
-The architecture is intended to learn unresolved physics rather than replace every equation with a black box.
+The physics runs in **physical units**: the model converts its standardized state back with the
+training mean/std, applies the physics, and standardizes again. Winds must therefore be in m/s.
+(v0.2 applied advection to z-scores, which moved fields with the wrong speeds and even the wrong
+direction.)
 
-## Current real-grid proxy
+## One step
 
-The physics branch currently includes:
+1. **Semi-Lagrangian advection** of u, v, theta and q: departure points are traced back along the
+   local wind and fields are interpolated there. It is stable for any Courant number, so 0.25° hourly
+   data or coarse 6-hourly data with fast jets do not blow up (the v0.2 forward-Euler centred scheme
+   is unconditionally unstable for advection).
+2. **Coriolis** (optional, `coriolis_scale`): exact rotation of the wind by the angle `f·dt`
+   (energy conserving).
+3. **Stratification** `dv -= s · dθ/dy` and **scalar diffusion**, explicit.
 
-- spherical-coordinate horizontal gradients on a regular lat/lon grid
-- advection by `u` and `v`
-- latitude-dependent Coriolis parameter
-- a simple stratification term
-- diffusion regularization
+Longitude is periodic for global grids and one-sided/clamped for regional grids; latitude edges are
+clamped.
 
-## Important scope boundary
+## Why Coriolis is off by default
 
-This is **not** a complete numerical weather prediction dynamical core. It does not solve the full compressible/hydrostatic primitive equations, moist thermodynamics, radiation, boundary layer, cloud microphysics, land surface, ocean coupling, or data assimilation.
+The state contains no pressure or geopotential, so there is no pressure-gradient force to balance
+Coriolis. Real winds are close to geostrophic balance, so rotating them by `f·dt` every step rotates
+balanced flow by ~100° per 6 h at mid-latitudes. On real ERA5 data (850 hPa, 6-hourly) this made the
+model 3× worse than persistence (validation MSE 0.25 vs 0.08), while the same model without the
+Coriolis term was 32% better than persistence after 3 short epochs. Enable it only together with a
+pressure/geopotential channel.
 
-The correct interpretation is:
+## Scope boundary
 
-`real-data hybrid research core`
-
-not:
-
+This is **not** a numerical weather prediction dynamical core. It does not solve the primitive
+equations, moist thermodynamics, radiation, boundary layer, cloud microphysics, land surface, ocean
+coupling, or data assimilation. Interpretation: `real-data hybrid research core`, not
 `operational NWP solver`.
 
 ## Upgrade path
 
-The final global architecture should replace `RealGridPhysicsCore` with a validated atmospheric dynamical core while preserving the fractional closure interface.
+Replace `RealGridPhysicsCore` with a validated atmospheric dynamical core while preserving the
+fractional closure interface.

@@ -45,11 +45,13 @@ def test_real_data_pipeline(tmp_path):
     assert windows.starts[0] == 2
     assert windows.starts[-1] == 13
     history, future = windows[0]
-    model_cfg = ModelConfig(hidden=8, memory_dim=8, memory_heads=2, memory_layers=1, history=4)
+    model_cfg = ModelConfig(hidden=8, memory_dim=8, memory_heads=2, memory_layers=1, history=4, dt_hours=1.0)
     model = FNGFTWeatherModel(model_cfg)
+    model.set_normalization(normalizer.mean, normalizer.std)
     with torch.inference_mode():
         pred, info = model(history.unsqueeze(0), torch.tensor(lat), torch.tensor(lon), steps=2)
     assert pred.shape == (1, 2, 4, len(lat), len(lon))
+    assert torch.isfinite(pred).all()
     assert info["alpha"].min().item() >= model_cfg.alpha_min
     assert info["alpha"].max().item() <= model_cfg.alpha_max
     assert info["beta"].min().item() >= model_cfg.beta_min

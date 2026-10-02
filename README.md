@@ -1,216 +1,146 @@
-# FNGFT-AI Real-Data Weather Forecast Prototype v0.2
+# FNGFT-AI Real-Data Weather Forecast Prototype v0.3
 
-This repository is a deliberately stricter rebuild of the first FNGFT-AI prototype for experimentation with **real gridded weather datasets**.
-
-The intended research architecture is:
+A research prototype that learns a **fractional closure** around a reduced **physics proxy** and
+forecasts gridded weather fields (u, v, theta, q) from real historical datasets.
 
 ```text
-real observations / analysis fields
+real gridded data (NetCDF / Zarr / GRIB, one file or many)
           ↓
-validated xarray dataset
+validated xarray dataset  →  canonical state X = (u, v, theta, q)   [time, 4, lat, lon]
           ↓
-canonical state X = (u,v,theta,q)
+training-period normalization (no leakage)  →  history windows
           ↓
-training-only normalization
+Memory Transformer → H_t → Order Head → alpha, beta, kappa
           ↓
-history window
+fractional spatial operator + causal power-law memory → learned closure / fluxes
           ↓
-Memory Transformer → H_t
+physics proxy in physical units (semi-Lagrangian advection, optional Coriolis, diffusion)
           ↓
-Order Head → alpha, beta, kappa
-          ↓
-Fractional spatial operator + causal memory
-          ↓
-learned closure / fluxes
-          ↓
-explicit real-grid physics proxy
-          ↓
-autoregressive forecast
+autoregressive forecast  →  NetCDF / NPZ / HTTP API / web dashboard
 ```
 
-## What this release changes
-
-The previous prototype was synthetic-first. This version is real-data-first:
-
-- explicit xarray ingestion
-- NetCDF / Zarr / optional GRIB support
-- variable-name mapping
-- strict time/grid validation
-- train-only normalization
-- temporal windowing
-- real-data training/evaluation commands
-- newest-file real-time forecast operation
-- checkpoint provenance data
-- HTTP inference API
-- per-module Markdown documentation
-
-## Important scientific boundary
-
-This is still a **research prototype**.
-
-The current physics branch is a reduced rotating/stratified transport proxy. The fractional operator is an FFT approximation that is periodic in both spatial directions. It is therefore not yet a validated global NWP model.
-
-The purpose of this stage is to answer experimentally:
-
-1. Can the architecture ingest real atmospheric fields without data leakage?
-2. Can it forecast held-out real data better than suitable baselines?
-3. Do alpha/beta/kappa fields remain stable and interpretable across regimes?
-4. Does an SGS-supervised version recover a reproducible fractional response?
-5. Does the learned closure transfer across spatial resolution and weather regimes?
+**New here? Read [`USER_GUIDE.md`](USER_GUIDE.md)** — it lists exactly what you need to do on your
+side, step by step. [`AUDIT_REPORT.md`](AUDIT_REPORT.md) lists what was broken in v0.2 and how it
+was fixed, including results on real ERA5 data.
 
 ## Install
 
-```bash
-python -m pip install -r requirements.txt
-```
-
-Optional GRIB support requires a compatible xarray GRIB backend such as `cfgrib` with ecCodes.
-
-## Configure your data
-
-Edit:
-
-```text
-configs/real_data.yaml
-```
-
-The critical section is:
-
-```yaml
-variables:
-  u: your_u_variable
-  v: your_v_variable
-  theta: your_temperature_variable
-  q: your_humidity_variable
-```
-
-The current model requires exactly four 2-D fields on a common `time × lat × lon` grid. A vertical level can be selected with `level_dim` and `level_value`.
-
-## Inspect the dataset first
+Python 3.11+.
 
 ```bash
-python -m fngft.cli inspect --config configs/real_data.yaml
+python -m venv .venv
+# Windows: .venv\Scripts\activate      Linux/macOS: source .venv/bin/activate
+pip install -r requirements.txt
+pip install -e .
 ```
 
-Do not train until inspection succeeds.
+For GPU training install the CUDA build of PyTorch first (see https://pytorch.org). GRIB files
+additionally need `cfgrib` + ecCodes.
 
-## Train
-
-```bash
-python -m fngft.cli train --config configs/real_data.yaml
-```
-
-The training job:
-
-1. loads the dataset,
-2. validates dimensions and timestamps,
-3. fits normalization statistics only on the training interval,
-4. builds history/future samples,
-5. trains the hybrid model,
-6. validates on the configured validation interval,
-7. saves the best checkpoint together with model/data/grid metadata.
-
-## Evaluate
-
-```bash
-python -m fngft.cli evaluate   --config configs/real_data.yaml   --checkpoint artifacts/fngft_real.pt   --split test
-```
-
-## Run the newest-file forecast
-
-Set `data.source` to a directory where new files appear.
-
-Then:
-
-```bash
-python -m fngft.cli forecast-latest   --config configs/real_data.yaml   --checkpoint artifacts/fngft_real.pt   --steps 6   --output artifacts/latest_forecast.npz
-```
-
-The newest supported file is selected by filesystem modification time.
-
-## Run the HTTP API
-
-```bash
-uvicorn fngft.api:app --host 0.0.0.0 --port 8080
-```
-
-Set the checkpoint explicitly in deployment:
-
-```bash
-MODEL_PATH=artifacts/fngft_real.pt uvicorn fngft.api:app --host 0.0.0.0 --port 8080
-```
-
-## Data contract
-
-### Required dimensions
-
-```text
-time
-lat
-lon
-```
-
-### Required canonical variables
-
-```text
-u
-v
-theta
-q
-```
-
-Source datasets can use different names; the configuration maps them.
-
-## Dataset strategy for serious experiments
-
-The recommended progression is:
-
-### Level 1 — real analysis/reanalysis
-
-Train and test forecasting on a clean, time-split atmospheric analysis dataset.
-
-### Level 2 — multi-resolution atmospheric data
-
-Add paired high-resolution and coarse-resolution fields. Compute the unresolved tendency/flux:
-
-```text
-SGS = high-resolution truth tendency - coarse resolved tendency
-```
-
-Use the SGS target to train and test fractional operator consistency.
-
-### Level 3 — observations + assimilation
-
-Add radar, satellite, radiosonde and other observation streams through a separate data-assimilation layer.
-
-### Level 4 — global model
-
-Replace the periodic FFT operator with a sphere-aware fractional operator and replace the reduced physics proxy with a validated atmospheric dynamical core.
-
-### Level 5 — probabilistic forecast
-
-Add the probabilistic generator only after the deterministic real-data path is stable and properly evaluated.
-
-## Governance
-
-Every trained checkpoint stores:
-
-- model configuration
-- variable mapping
-- normalization statistics
-- grid coordinates
-- training configuration
-
-For serious experiments also record dataset version, preprocessing version, source provenance, code revision, random seeds, hardware, and evaluation results externally.
-
-## Tests
+## Check the installation (2 minutes, no data needed)
 
 ```bash
 pytest -q
+python -m fngft demo
 ```
 
-The integration test creates a tiny NetCDF dataset and exercises the complete ingestion → preprocessing → model path.
+`demo` creates a synthetic dataset and runs inspect → train → evaluate → forecast. It must end with
+`DEMO PASSED`.
 
-## Module documentation
+## Check on real data (optional, public ERA5 sample)
 
-Every Python module has a same-name Markdown explanation next to it. Read the `.md` file before modifying its corresponding `.py` file.
+```bash
+pip install gcsfs
+python scripts/download_era5_sample.py                 # ~150 MB into data/
+python -m fngft inspect  --config configs/era5_sample.yaml
+python -m fngft train    --config configs/era5_sample.yaml
+python -m fngft evaluate --config configs/era5_sample.yaml --checkpoint artifacts/era5_sample.pt --steps 4
+```
+
+## Use your own historical data
+
+1. Copy `configs/real_data.yaml` and edit `data.source`, the dimension names, the four variable
+   names and the train/val/test dates.
+2. Validate: `python -m fngft inspect --config configs/my_data.yaml`
+3. Train: `python -m fngft train --config configs/my_data.yaml`
+4. Evaluate against persistence/climatology:
+   `python -m fngft evaluate --config configs/my_data.yaml --checkpoint artifacts/fngft_real.pt --split test --steps 4 --output artifacts/eval_test.json`
+5. Forecast from the newest file:
+   `python -m fngft forecast-latest --config configs/my_data.yaml --checkpoint artifacts/fngft_real.pt --steps 6 --output artifacts/latest_forecast.nc`
+
+`python -m fngft` and the installed `fngft` command are the same CLI (`python -m fngft.cli` also works).
+
+### What the data may look like
+
+| Requirement | Detail |
+|---|---|
+| Dimensions | time, latitude, longitude (any names; set them in the config) |
+| Variables | four fields mapped to `u`, `v` (wind, **m/s**), `theta` (temperature), `q` (humidity) |
+| Grid | regular lat/lon; ascending or descending; global or regional |
+| Time | fixed step (hourly, 3-hourly, 6-hourly, daily…); missing timestamps are allowed and skipped |
+| Levels | multi-level files: set `level_dim` + `level_value` |
+| Files | one file, a folder of files, a glob (`data/era5_*.nc`) or a Zarr store |
+| Missing values | `missing_values: interpolate` fills NaNs (linear in time) |
+| Size | `region:` crops an area, `coarsen:` block-averages the grid |
+
+See [`DATA_CONTRACT.md`](DATA_CONTRACT.md).
+
+## Web dashboard and HTTP API
+
+```bash
+python -m fngft serve --checkpoint artifacts/fngft_real.pt --config configs/my_data.yaml --port 8080
+```
+
+Open http://127.0.0.1:8080 for the dashboard (model status, training metrics, latest-forecast maps of
+u/v/theta/q and alpha/beta/kappa). Interactive API docs are at `/docs`.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /` | web dashboard |
+| `GET /health` | service and model status (the service stays up when the checkpoint is missing) |
+| `GET /model-info` | grid, variables, time step, training history, provenance |
+| `POST /forecast` | forecast from a posted history (`units`: `standardized` or `physical`) |
+| `GET /forecast-latest?steps=N` | forecast from the newest file in the configured data source |
+| `POST /reload` | reload the checkpoint after retraining |
+
+Docker: `docker build -t fngft .` then
+`docker run -p 8080:8080 -v $PWD/artifacts:/app/artifacts fngft`.
+
+## Outputs
+
+* `artifacts/<name>.pt` — checkpoint: weights, model config (incl. inferred `dt_hours`), normalization
+  statistics, data mapping, units, grid, training history, provenance (time, code revision, versions).
+* `artifacts/<name>.history.json` — per-epoch losses next to the persistence baseline.
+* `evaluate` JSON — per lead time and variable: RMSE/MAE in physical units, persistence and
+  climatology RMSE, skill vs persistence, anomaly correlation; latitude-weighted.
+* `forecast-latest` — NetCDF (`.nc`) or NumPy (`.npz`) with u, v, theta, q in physical units plus
+  alpha/beta/kappa maps.
+
+## Scientific boundary
+
+This is a **research prototype**, not an operational NWP system. The physics branch is a reduced
+transport proxy (no pressure gradient, radiation, moist physics or data assimilation). The fractional
+operator is an FFT approximation (latitude mirrored, longitude periodic for global grids). Forecasts
+must not replace meteorological review for high-impact decisions — see [`GOVERNANCE.md`](GOVERNANCE.md).
+
+The research questions this stage supports:
+
+1. Can the architecture ingest real atmospheric fields without data leakage?
+2. Does it forecast held-out real data better than persistence and climatology?
+3. Do alpha/beta/kappa fields remain stable and interpretable across regimes?
+4. Does an SGS-supervised version recover a reproducible fractional response?
+5. Does the learned closure transfer across resolution and weather regimes?
+
+Recommended progression: real reanalysis → multi-resolution SGS targets → observation streams with
+data assimilation → sphere-aware operator + validated dynamical core → probabilistic forecasts.
+
+## Repository layout
+
+```text
+fngft/            Python package (every module has a same-name .md explanation)
+  static/         web dashboard
+configs/          real_data.yaml (template for your data), era5_sample.yaml
+scripts/          download_era5_sample.py
+tests/            pytest suite (data handling, physics, end-to-end, API)
+.github/workflows CI: tests + synthetic demo on Python 3.11-3.14
+```
