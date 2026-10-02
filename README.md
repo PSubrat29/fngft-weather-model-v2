@@ -65,7 +65,7 @@ python -m fngft evaluate --config configs/era5_sample.yaml --checkpoint artifact
 3. Train: `python -m fngft train --config configs/my_data.yaml`
 4. Evaluate against persistence/climatology:
    `python -m fngft evaluate --config configs/my_data.yaml --checkpoint artifacts/fngft_real.pt --split test --steps 4 --output artifacts/eval_test.json`
-5. Forecast from the newest file:
+5. Forecast from the most recent data:
    `python -m fngft forecast-latest --config configs/my_data.yaml --checkpoint artifacts/fngft_real.pt --steps 6 --output artifacts/latest_forecast.nc`
 
 `python -m fngft` and the installed `fngft` command are the same CLI (`python -m fngft.cli` also works).
@@ -100,7 +100,7 @@ u/v/theta/q and alpha/beta/kappa). Interactive API docs are at `/docs`.
 | `GET /health` | service and model status (the service stays up when the checkpoint is missing) |
 | `GET /model-info` | grid, variables, time step, training history, provenance |
 | `POST /forecast` | forecast from a posted history (`units`: `standardized` or `physical`) |
-| `GET /forecast-latest?steps=N` | forecast from the newest file in the configured data source |
+| `GET /forecast-latest?steps=N` | forecast from the most recent data in the configured data source |
 | `POST /reload` | reload the checkpoint after retraining |
 
 Docker: `docker build -t fngft .` then

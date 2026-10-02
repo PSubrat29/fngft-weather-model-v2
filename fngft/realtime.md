@@ -2,31 +2,35 @@
 
 ## Purpose
 
-Runs one forecast cycle using the newest weather file in the configured source directory (or the
-configured file itself).
+Runs one forecast cycle from the most recent data in the configured source.
 
 ## Workflow
 
 ```text
-source directory → newest NetCDF/Zarr/GRIB file → validate + extract state
+data.source (file, folder, glob, Zarr) → combined lazily
+      → last history+48 time steps selected (level/region/coarsen applied)
+      → trailing steps that miss a variable are dropped
       → last N frames (must be contiguous) → checkpoint normalizer
-      → FNGFT-AI rollout → inverse normalization → NetCDF / NPZ + summary
+      → FNGFT-AI rollout → inverse normalization → plausibility check → NetCDF / NPZ + summary
 ```
 
 Checks: the variable mapping equals the checkpoint's, the data step equals the checkpoint's
 `dt_hours`, and the history window has no missing timestamps. Forecast valid times use the
-checkpoint's `dt_hours`.
+checkpoint's `dt_hours`. Only the most recent time steps are read, so memory use does not grow with
+the archive length.
 
-## Why it is one-shot
+## Plausibility warnings
 
-A one-shot function is easier to test and replay than a permanently running watcher. A scheduler,
-workflow engine or cloud job invokes it each time a new dataset arrives.
+Every forecast step is checked: standardized values beyond ±10 (far outside the training data) or
+winds above 150 m/s are flagged. The summary returns `warnings` and `first_unphysical_step`; the CLI
+prints them to stderr, the NetCDF output stores them in the `warnings` attribute, and the API and
+dashboard show them.
 
 ## Output
 
 `--output something.nc` writes NetCDF with variables `u, v, theta, q` (time, lat, lon; physical units,
 `units` attributes copied from the training data) and `alpha, beta, kappa` (lat, lon). Any other
-suffix writes `.npz` with `forecast[step, channel, lat, lon]`, `channels`, `time`, `lat`, `lon`,
-`alpha`, `beta`, `kappa`.
+path writes `.npz` (the suffix is appended when missing and the real path is reported) with
+`forecast[step, channel, lat, lon]`, `channels`, `time`, `lat`, `lon`, `alpha`, `beta`, `kappa`.
 
 `run_forecast` (forecast from an in-memory physical history) is shared with the HTTP API.

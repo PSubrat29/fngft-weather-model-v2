@@ -6,9 +6,15 @@ Defines the complete configuration contract and validates YAML files before any 
 
 ## Validation
 
-`load_config` rejects unknown keys (typos such as `sourse:` are reported with the list of allowed
-keys) and inconsistent values (alpha/beta bounds, `memory_dim` not divisible by `memory_heads`,
-`level_dim` without `level_value`, unknown `format`, …).
+`load_config` reads the file as UTF-8 (a Windows Notepad BOM is accepted) and rejects unknown keys
+(typos such as `sourse:` are reported with the list of allowed keys), null values for required keys,
+and inconsistent values (alpha/beta bounds, `memory_dim` not divisible by `memory_heads`,
+`level_dim` without `level_value`, unknown `format`, `epochs`/`batch_size` < 1, …).
+
+Split dates are normalised to timezone-naive UTC (`2020-01-01T05:30+05:30` becomes
+`2020-01-01T00:00:00`). A training range is required; a split whose start is after its end, or any
+two splits that overlap, are rejected so validation/test data cannot leak into training. A split may
+be open-ended (null start or end).
 
 ## `DataConfig`
 
