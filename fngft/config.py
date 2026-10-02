@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Dict, Optional
 
+import pandas as pd
 import yaml
 
 DATA_FORMATS = {"auto", "netcdf", "zarr", "grib"}
@@ -103,8 +104,44 @@ def _build(cls, raw: Optional[dict], section: str):
     return cls(**raw)
 
 
+SPLITS = ("train", "val", "test")
+REQUIRED = {
+    "data": ("source", "format", "time_dim", "lat_dim", "lon_dim", "variables", "coarsen", "missing_values"),
+    "model": ("in_channels", "hidden", "memory_dim", "memory_heads", "memory_layers", "history", "basis_orders"),
+    "training": ("batch_size", "epochs", "learning_rate", "checkpoint", "rollout_steps", "lr_schedule"),
+}
+
+
+def _normalize_time(value, key: str) -> Optional[str]:
+    """Return a timezone-naive UTC ISO string (YAML may give str, date or datetime, with or without offset)."""
+    if value is None or value == "":
+        return None
+    try:
+        ts = pd.Timestamp(value)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"data.{key}={value!r} is not a valid date/time (use e.g. 2020-01-01 or 2020-01-01T06:00)") from exc
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert("UTC").tz_localize(None)
+    return ts.isoformat()
+
+
+def split_ranges(d: "DataConfig") -> Dict[str, tuple]:
+    """Configured splits as {name: (start, end)}; a split is configured when its start or end is set."""
+    out = {}
+    for name in SPLITS:
+        start, end = getattr(d, f"{name}_start"), getattr(d, f"{name}_end")
+        if start is not None or end is not None:
+            out[name] = (start, end)
+    return out
+
+
 def validate_config(config: AppConfig) -> None:
     d, m, t = config.data, config.model, config.training
+    for section, keys in REQUIRED.items():
+        obj = getattr(config, section)
+        for key in keys:
+            if getattr(obj, key) is None:
+                raise ValueError(f"{section}.{key} must not be null")
     if d.format.lower() not in DATA_FORMATS:
         raise ValueError(f"data.format must be one of {sorted(DATA_FORMATS)}, got '{d.format}'")
     if d.missing_values not in MISSING_VALUE_POLICIES:
@@ -121,6 +158,28 @@ def validate_config(config: AppConfig) -> None:
             raise ValueError("data.region.lon_min must be smaller than lon_max")
     if d.level_dim and d.level_value is None:
         raise ValueError("data.level_value is required when data.level_dim is set")
+    for name in SPLITS:
+        for side in ("start", "end"):
+            key = f"{name}_{side}"
+            setattr(d, key, _normalize_time(getattr(d, key), key))
+    ranges = split_ranges(d)
+    if "train" not in ranges:
+        raise ValueError("data.train_start and/or data.train_end must be set (the training period)")
+    bounds = {}
+    for name, (start, end) in ranges.items():
+        lo = pd.Timestamp(start) if start else pd.Timestamp.min
+        hi = pd.Timestamp(end) if end else pd.Timestamp.max
+        if lo > hi:
+            raise ValueError(f"data.{name}_start ({start}) is after data.{name}_end ({end})")
+        bounds[name] = (lo, hi)
+    names = list(bounds)
+    for i, a in enumerate(names):
+        for b in names[i + 1 :]:
+            if bounds[a][0] <= bounds[b][1] and bounds[b][0] <= bounds[a][1]:
+                raise ValueError(
+                    f"data split '{a}' {ranges[a]} overlaps '{b}' {ranges[b]}; splits must not share any time "
+                    "(otherwise validation/test data leak into training)"
+                )
     if m.in_channels != 4:
         raise ValueError("model.in_channels must be 4 (u, v, theta, q)")
     if m.memory_dim % m.memory_heads != 0:
@@ -133,6 +192,10 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError("model.beta_min/beta_max must satisfy 0 < beta_min < beta_max")
     if m.dt_hours is not None and m.dt_hours <= 0:
         raise ValueError("model.dt_hours must be positive (or null to infer it from the data)")
+    if t.epochs < 1:
+        raise ValueError("training.epochs must be >= 1")
+    if t.batch_size < 1:
+        raise ValueError("training.batch_size must be >= 1")
     if t.rollout_steps < 1:
         raise ValueError("training.rollout_steps must be >= 1")
     if t.lr_schedule not in {"cosine", "constant"}:
@@ -144,7 +207,9 @@ def load_config(path: str | Path) -> AppConfig:
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
-    raw = yaml.safe_load(path.read_text()) or {}
+    raw = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"Config file {path} must contain a YAML mapping with data/model/training sections")
     unknown = sorted(set(raw) - {"data", "model", "training"})
     if unknown:
         raise ValueError(f"Unknown top-level config section(s): {unknown}. Allowed: data, model, training")
@@ -158,4 +223,4 @@ def load_config(path: str | Path) -> AppConfig:
 
 
 def save_config(config: AppConfig, path: str | Path) -> None:
-    Path(path).write_text(yaml.safe_dump(asdict(config), sort_keys=False))
+    Path(path).write_text(yaml.safe_dump(asdict(config), sort_keys=False), encoding="utf-8")

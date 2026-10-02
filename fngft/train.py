@@ -23,10 +23,12 @@ from .losses import composite_real_data_loss
 from .model import FNGFTWeatherModel
 from .preprocess import (
     TemporalWindowDataset,
+    area_weights,
     build_train_normalizer,
     infer_time_step_hours,
-    prepare_dataset,
     resolve_longitude_periodic,
+    select_dataset,
+    state_from_selection,
 )
 from .schema import CANONICAL_CHANNELS
 
@@ -83,9 +85,12 @@ def train(config: AppConfig, *, log=print) -> Path:
     device = resolve_device(config.training.device)
     t0 = time.time()
     with open_weather_dataset(config.data) as ds:
-        state_raw, times, lat, lon = prepare_dataset(ds, config.data, crop_to_splits=True)
+        work, selection = select_dataset(ds, config.data, crop_to_splits=True)
+        state_raw, times, lat, lon = state_from_selection(work, config.data)
         units = {c: ds[config.data.variables[c]].attrs.get("units") for c in CANONICAL_CHANNELS}
     log(f"loaded state {tuple(state_raw.shape)} [time,channel,lat,lon] covering {times[0]} .. {times[-1]} in {time.time() - t0:.1f}s")
+    if selection["level"] is not None:
+        log(f"selected {config.data.level_dim}={selection['level']:g}")
 
     dt_hours = resolve_dt_hours(config, infer_time_step_hours(times))
     periodic = resolve_longitude_periodic(lon, config.data)
@@ -137,14 +142,18 @@ def train(config: AppConfig, *, log=print) -> Path:
     if config.training.lr_schedule == "cosine":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, config.training.epochs * len(train_loader)))
 
+    # Logged MSEs use the same grid-cell area weights as `evaluate`, so both report the same skill.
+    w_cpu = torch.from_numpy(area_weights(lat).astype(np.float32)).view(1, 1, 1, -1, 1)
+    w_dev = w_cpu.to(device)
     persistence_val = float("nan")
     if val_loader:
-        errs = []
+        total, count = 0.0, 0
         for history, future in val_loader:
             last = history[:, -1:].expand_as(future)
-            errs.append(torch.mean((last - future) ** 2).item())
-        persistence_val = float(np.mean(errs))
-        log(f"persistence baseline val_mse={persistence_val:.6f} (standardized units; the model should go below this)")
+            total += float((((last - future) ** 2) * w_cpu).mean(dim=(1, 2, 3, 4)).sum())
+            count += history.shape[0]
+        persistence_val = total / max(count, 1)
+        log(f"persistence baseline val_mse={persistence_val:.6f} (area-weighted, standardized units; the model should go below this)")
 
     output = Path(config.training.checkpoint)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -179,16 +188,17 @@ def train(config: AppConfig, *, log=print) -> Path:
         val_mean, val_mse = float("nan"), float("nan")
         if val_loader:
             model.eval()
-            vals, mses = [], []
+            vals, se_total, count = [], 0.0, 0
             with torch.inference_mode():
                 for history, future in val_loader:
                     history = history.to(device, non_blocking=True)
                     future = future.to(device, non_blocking=True)
                     pred, info = model(history, lat_t, lon_t, steps=config.training.rollout_steps)
-                    loss, mse = _loss_over_rollout(pred, future, info)
+                    loss, _ = _loss_over_rollout(pred, future, info)
                     vals.append(loss.item())
-                    mses.append(mse.item())
-            val_mean, val_mse = float(np.mean(vals)), float(np.mean(mses))
+                    se_total += float((((pred - future) ** 2) * w_dev).mean(dim=(1, 2, 3, 4)).sum())
+                    count += history.shape[0]
+            val_mean, val_mse = float(np.mean(vals)), se_total / max(count, 1)
         record = {
             "epoch": epoch,
             "train_loss": train_mean,
@@ -215,6 +225,7 @@ def train(config: AppConfig, *, log=print) -> Path:
                     "data_config": asdict(config.data),
                     "grid": {"lat": lat.tolist(), "lon": lon.tolist()},
                     "data_units": units,
+                    "data_selection": {"level": selection["level"]},
                     "training": asdict(config.training),
                     "metrics": {"best_epoch": epoch, "best_score": score, "history": history_log},
                     "provenance": {

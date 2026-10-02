@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -75,7 +76,7 @@ def main() -> None:
 
     inspect_p = sub.add_parser("inspect", help="Validate and profile the configured dataset")
     inspect_p.add_argument("--config", required=True)
-    inspect_p.add_argument("--latest", action="store_true", help="Inspect only the newest file in data.source")
+    inspect_p.add_argument("--latest", action="store_true", help="Check only the most recent 24 time steps (what forecast-latest uses)")
 
     train_p = sub.add_parser("train", help="Train a checkpoint")
     train_p.add_argument("--config", required=True)
@@ -93,7 +94,7 @@ def main() -> None:
     eval_p.add_argument("--device", default="auto")
     eval_p.add_argument("--output", default="", help="Write the JSON report to this file")
 
-    forecast_p = sub.add_parser("forecast-latest", help="Forecast from the newest file in data.source")
+    forecast_p = sub.add_parser("forecast-latest", help="Forecast from the most recent data in data.source")
     forecast_p.add_argument("--config", required=True)
     forecast_p.add_argument("--checkpoint", required=True)
     forecast_p.add_argument("--steps", type=int, default=1)
@@ -142,7 +143,10 @@ def main() -> None:
     elif args.command == "forecast-latest":
         from .realtime import forecast_latest, public_summary
 
-        _print(public_summary(forecast_latest(args.config, args.checkpoint, args.steps, args.output, args.device)))
+        result = forecast_latest(args.config, args.checkpoint, args.steps, args.output, args.device)
+        for warning in result["warnings"]:
+            print(f"WARNING: {warning}", file=sys.stderr)
+        _print(public_summary(result))
     elif args.command == "serve":
         if args.checkpoint:
             os.environ["MODEL_PATH"] = args.checkpoint

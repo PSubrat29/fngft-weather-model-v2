@@ -4,12 +4,15 @@ import glob
 from pathlib import Path
 from typing import List
 
+import numpy as np
 import xarray as xr
 
 from .config import DataConfig
-from .schema import DatasetProfile, SUPPORTED_SUFFIXES, validate_dataset
+from .schema import DatasetProfile, SUPPORTED_SUFFIXES, is_global_longitude, regular_time_step_hours
 
 GRIB_SUFFIXES = {".grib", ".grb", ".grib2", ".grb2"}
+# Number of most recent time steps checked by `inspect --latest`.
+LATEST_INSPECT_STEPS = 24
 
 
 def _is_remote(source: str) -> bool:
@@ -24,37 +27,31 @@ def _supported_files(directory: Path) -> List[Path]:
     return sorted(x for x in directory.iterdir() if x.suffix.lower() in SUPPORTED_SUFFIXES and not x.name.startswith("."))
 
 
-def discover_latest_source(path: str | Path) -> str:
-    """Return the newest supported file in a directory, or the input path itself."""
-    p = Path(path)
-    if _is_remote(str(path)) or not p.is_dir() or _is_zarr(str(p)):
-        return str(path)
-    candidates = _supported_files(p)
-    if not candidates:
-        raise FileNotFoundError(f"No supported weather data files ({sorted(SUPPORTED_SUFFIXES)}) found in {p}")
-    return str(max(candidates, key=lambda item: item.stat().st_mtime))
-
-
 def resolve_sources(source: str) -> List[str]:
-    """Expand a file, Zarr store, directory of files, or glob pattern into a list of sources."""
+    """Expand a file, Zarr store, directory of files, or glob pattern into a list of sources.
+
+    An existing path always wins over glob interpretation, so folder names containing '[' work.
+    """
     if not source:
         raise ValueError("data.source is empty. Set it to your dataset file, directory, glob pattern or Zarr store.")
-    if _is_remote(source) or _is_zarr(source):
+    if _is_remote(source):
         return [source]
-    if any(ch in source for ch in "*?["):
-        matches = sorted(glob.glob(source))
-        if not matches:
-            raise FileNotFoundError(f"No files match data.source pattern: {source}")
-        return matches
     p = Path(source)
+    if _is_zarr(source) and p.exists():
+        return [source]
     if p.is_dir():
         files = _supported_files(p)
         if not files:
             raise FileNotFoundError(f"No supported weather data files ({sorted(SUPPORTED_SUFFIXES)}) found in {p}")
         return [str(x) for x in files]
-    if not p.exists():
-        raise FileNotFoundError(f"data.source does not exist: {source}")
-    return [source]
+    if p.exists():
+        return [source]
+    if any(ch in source for ch in "*?["):
+        matches = sorted(m for m in glob.glob(source) if Path(m).suffix.lower() in SUPPORTED_SUFFIXES or _is_zarr(m))
+        if not matches:
+            raise FileNotFoundError(f"No supported files match data.source pattern: {source}")
+        return matches
+    raise FileNotFoundError(f"data.source does not exist: {source}")
 
 
 def _detect_format(source: str, configured: str) -> str:
@@ -68,14 +65,15 @@ def _detect_format(source: str, configured: str) -> str:
     return "netcdf"
 
 
-def open_weather_dataset(config: DataConfig, *, latest: bool = False) -> xr.Dataset:
-    """Open the configured dataset.
+def open_weather_dataset(config: DataConfig) -> xr.Dataset:
+    """Open the configured dataset lazily.
 
     ``data.source`` may be a single file, a Zarr store (local or remote URL), a directory or a glob
-    pattern. A directory/glob with several files is opened as one dataset combined along time.
-    With ``latest=True`` only the newest file of a directory is opened (real-time mode).
+    pattern. Several files are combined into one dataset by their coordinates (time-split archives,
+    one-variable-per-file archives, or both). Real-time forecasting takes the most recent time steps
+    of this combined dataset, so the file layout and file modification times do not matter.
     """
-    sources = [discover_latest_source(config.source)] if latest else resolve_sources(config.source)
+    sources = resolve_sources(config.source)
     fmt = _detect_format(sources[0], config.format)
     try:
         if fmt == "zarr":
@@ -89,7 +87,15 @@ def open_weather_dataset(config: DataConfig, *, latest: bool = False) -> xr.Data
             raise ValueError(f"Unsupported data format: {config.format}")
         if len(sources) == 1:
             return xr.open_dataset(sources[0], engine=engine)
-        return xr.open_mfdataset(sources, engine=engine, combine="by_coords", data_vars="minimal", coords="minimal", compat="override")
+        return xr.open_mfdataset(
+            sources,
+            engine=engine,
+            combine="by_coords",
+            data_vars="minimal",
+            coords="minimal",
+            compat="override",
+            join="outer",
+        )
     except (ValueError, FileNotFoundError):
         raise
     except Exception as exc:
@@ -101,14 +107,47 @@ def open_weather_dataset(config: DataConfig, *, latest: bool = False) -> xr.Data
 
 
 def inspect_dataset(config: DataConfig, *, latest: bool = False) -> DatasetProfile:
-    with open_weather_dataset(config, latest=latest) as ds:
-        profile = validate_dataset(
-            ds,
-            time_dim=config.time_dim,
-            lat_dim=config.lat_dim,
-            lon_dim=config.lon_dim,
-            variables=config.variables,
-            level_dim=config.level_dim,
+    """Validate the dataset with every configured selection applied and return its profile.
+
+    The profile describes the data the model will actually see (after level, region and coarsen
+    selection). With ``latest=True`` only the most recent time steps are checked, which is what
+    ``forecast-latest`` uses. Missing values are counted; with ``missing_values: error`` any NaN fails.
+    """
+    from .preprocess import count_missing, resolve_longitude_periodic, select_dataset
+    from .schema import CANONICAL_CHANNELS
+
+    with open_weather_dataset(config) as ds:
+        work, info = select_dataset(ds, config, tail_steps=LATEST_INSPECT_STEPS if latest else None)
+        times = np.asarray(work[config.time_dim].values)
+        lat = np.asarray(work[config.lat_dim].values, dtype=float)
+        lon = np.asarray(work[config.lon_dim].values, dtype=float)
+        step, gaps = regular_time_step_hours(times)
+        missing = count_missing(work, config)
+        units = {c: work[config.variables[c]].attrs.get("units") for c in CANONICAL_CHANNELS}
+    if missing and config.missing_values == "error":
+        raise ValueError(
+            f"The selected data contains {missing} non-finite (NaN/inf) values. "
+            "Clean the data, or set data.missing_values: interpolate in the config."
         )
-    source = discover_latest_source(config.source) if latest else config.source
-    return DatasetProfile(**{**profile.__dict__, "source": source})
+    return DatasetProfile(
+        source=config.source,
+        time_count=int(times.size),
+        lat_count=int(lat.size),
+        lon_count=int(lon.size),
+        time_start=str(times[0]),
+        time_end=str(times[-1]),
+        time_step_hours=step,
+        variables=dict(config.variables),
+        lat_min=float(lat.min()),
+        lat_max=float(lat.max()),
+        lon_min=float(lon.min()),
+        lon_max=float(lon.max()),
+        lat_step=float(np.median(np.abs(np.diff(lat)))),
+        lon_step=float(np.median(np.abs(np.diff(lon)))),
+        time_gaps=gaps,
+        longitude_global=is_global_longitude(lon),
+        units=units,
+        selected_level=info["level"],
+        longitude_periodic=resolve_longitude_periodic(lon, config),
+        missing_value_count=missing,
+    )

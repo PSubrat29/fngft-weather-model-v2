@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
@@ -11,11 +13,18 @@ import xarray as xr
 
 from .config import load_config
 from .evaluate import check_variable_mapping, load_checkpoint
-from .io import discover_latest_source, open_weather_dataset
+from .io import open_weather_dataset
 from .model import FNGFTWeatherModel
-from .preprocess import Standardizer, infer_time_step_hours, prepare_dataset
+from .preprocess import Standardizer, infer_time_step_hours, select_dataset, state_from_selection, trim_incomplete_tail
 from .schema import CANONICAL_CHANNELS, NS_PER_HOUR, time_values_ns
 from .train import resolve_device
+
+# Forecast steps beyond these limits are flagged: standardized values far outside the training data,
+# or winds no real atmosphere produces.
+PLAUSIBLE_MAX_Z = 10.0
+PLAUSIBLE_MAX_WIND = 150.0
+# Extra recent time steps read so that trailing incomplete steps can be skipped.
+LATEST_LOOKBACK_STEPS = 48
 
 
 def run_forecast(
@@ -38,7 +47,10 @@ def run_forecast(
     forecast_physical = normalizer.inverse(forecast_std)
     if not np.isfinite(forecast_physical).all():
         raise RuntimeError("Model produced non-finite forecast values")
+    warnings, first_bad = plausibility_warnings(forecast_std, forecast_physical)
     return {
+        "warnings": warnings,
+        "first_unphysical_step": first_bad,
         "forecast_standardized": forecast_std,
         "forecast_physical": forecast_physical.astype(np.float32),
         "alpha": info["alpha"][0, 0].cpu().numpy(),
@@ -47,9 +59,26 @@ def run_forecast(
     }
 
 
-def write_forecast(path: str, result: dict, forecast_times: np.ndarray, lat: np.ndarray, lon: np.ndarray, units: dict, attrs: dict) -> None:
+def plausibility_warnings(forecast_std: np.ndarray, forecast_physical: np.ndarray) -> tuple[list, Optional[int]]:
+    """Flag forecast steps that leave the range of the training data or of physically possible winds."""
+    steps = forecast_std.shape[0]
+    zmax = np.abs(forecast_std).reshape(steps, -1).max(axis=1)
+    wind = np.hypot(forecast_physical[:, 0], forecast_physical[:, 1]).reshape(steps, -1).max(axis=1)
+    bad = np.flatnonzero((zmax > PLAUSIBLE_MAX_Z) | (wind > PLAUSIBLE_MAX_WIND))
+    if bad.size == 0:
+        return [], None
+    k = int(bad[0])
+    return [
+        f"Forecast leaves the plausible range from step {k + 1} (max wind {wind[k]:.1f} m/s, "
+        f"max |z| {zmax[k]:.1f}); steps from {k + 1} on are not physically meaningful."
+    ], k + 1
+
+
+def write_forecast(path: str, result: dict, forecast_times: np.ndarray, lat: np.ndarray, lon: np.ndarray, units: dict, attrs: dict) -> str:
+    """Write NetCDF (.nc/.nc4) or NumPy (.npz, appended when missing). Returns the path written."""
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
+    attrs = {k: v for k, v in attrs.items() if v is not None}
     if out.suffix.lower() in {".nc", ".nc4"}:
         data_vars = {
             name: (("time", "lat", "lon"), result["forecast_physical"][:, c], {"units": units.get(name) or ""})
@@ -59,6 +88,8 @@ def write_forecast(path: str, result: dict, forecast_times: np.ndarray, lat: np.
             data_vars[key] = (("lat", "lon"), result[key])
         xr.Dataset(data_vars, coords={"time": forecast_times, "lat": lat, "lon": lon}, attrs=attrs).to_netcdf(out)
     else:
+        if out.suffix.lower() != ".npz":
+            out = out.with_name(out.name + ".npz")
         np.savez_compressed(
             out,
             forecast=result["forecast_physical"],
@@ -70,13 +101,16 @@ def write_forecast(path: str, result: dict, forecast_times: np.ndarray, lat: np.
             beta=result["beta"],
             kappa=result["kappa"],
         )
+    return str(out)
 
 
 def forecast_latest(config_path: str, checkpoint: str, steps: int = 1, output: str = "", device: str = "auto") -> dict:
-    """Run one forecast cycle from the newest file in ``data.source`` (or the file itself).
+    """Run one forecast cycle from the most recent data in ``data.source``.
 
-    ``output`` ending in .nc writes NetCDF (variables u, v, theta, q, alpha, beta, kappa); any other
-    suffix writes a compressed NumPy .npz archive. Forecast values are in physical units.
+    All files of the source are combined and the last ``history`` time steps that contain every
+    variable are used, so time-split archives, one-variable-per-file archives and real-time drop
+    folders all work. ``output`` ending in .nc writes NetCDF (u, v, theta, q, alpha, beta, kappa);
+    anything else writes a compressed NumPy .npz archive. Values are in physical units.
     """
     if steps < 1:
         raise ValueError("steps must be >= 1")
@@ -84,11 +118,14 @@ def forecast_latest(config_path: str, checkpoint: str, steps: int = 1, output: s
     dev = resolve_device(device)
     model, normalizer, blob = load_checkpoint(checkpoint, dev)
     check_variable_mapping(blob, cfg.data.variables)
-    with open_weather_dataset(cfg.data, latest=True) as ds:
-        raw, times, lat, lon = prepare_dataset(ds, cfg.data)
     hist = model.cfg.history
+    with open_weather_dataset(cfg.data) as ds:
+        work, _ = select_dataset(ds, cfg.data, tail_steps=hist + LATEST_LOOKBACK_STEPS)
+        work = trim_incomplete_tail(work, cfg.data)
+        work = work.isel({cfg.data.time_dim: slice(-max(hist, 2), None)})
+        raw, times, lat, lon = state_from_selection(work, cfg.data)
     if raw.shape[0] < hist:
-        raise ValueError(f"Need at least {hist} time steps in the latest data; found {raw.shape[0]}")
+        raise ValueError(f"Need at least {hist} time steps in the data; found {raw.shape[0]}")
     if raw.shape[0] >= 2:
         inferred_dt_hours = infer_time_step_hours(times)
         if not math.isclose(inferred_dt_hours, model.cfg.dt_hours, abs_tol=max(1e-6, 0.01 * model.cfg.dt_hours)):
@@ -100,19 +137,24 @@ def forecast_latest(config_path: str, checkpoint: str, steps: int = 1, output: s
     result = run_forecast(model, normalizer, raw[-hist:], lat, lon, steps, dev)
     step = np.timedelta64(int(round(model.cfg.dt_hours * 3600)), "s")
     forecast_times = np.array([times[-1] + step * (i + 1) for i in range(steps)]).astype("datetime64[ns]")
-    source = discover_latest_source(cfg.data.source)
     if output:
-        write_forecast(
+        output = write_forecast(
             output,
             result,
             forecast_times,
             lat,
             lon,
             blob.get("data_units") or {},
-            {"source": source, "analysis_time": str(times[-1]), "checkpoint": str(checkpoint), "model": "FNGFT-AI"},
+            {
+                "source": cfg.data.source,
+                "analysis_time": str(times[-1]),
+                "checkpoint": str(checkpoint),
+                "model": "FNGFT-AI",
+                "warnings": " | ".join(result["warnings"]) or None,
+            },
         )
     return {
-        "source": source,
+        "source": cfg.data.source,
         "analysis_time": str(times[-1]),
         "forecast_time_end": str(forecast_times[-1]),
         "steps": steps,
@@ -121,6 +163,8 @@ def forecast_latest(config_path: str, checkpoint: str, steps: int = 1, output: s
         "alpha_mean": float(result["alpha"].mean()),
         "beta_mean": float(result["beta"].mean()),
         "kappa_mean": float(result["kappa"].mean()),
+        "warnings": result["warnings"],
+        "first_unphysical_step": result["first_unphysical_step"],
         "output": output,
         "_result": result,
         "_times": forecast_times,
@@ -134,14 +178,17 @@ def public_summary(result: dict) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run a one-shot forecast from the newest real-data file.")
+    parser = argparse.ArgumentParser(description="Run a one-shot forecast from the most recent data in data.source.")
     parser.add_argument("--config", required=True)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--steps", type=int, default=1)
     parser.add_argument("--output", default="artifacts/latest_forecast.nc")
     parser.add_argument("--device", default="auto")
     args = parser.parse_args()
-    print(json.dumps(public_summary(forecast_latest(args.config, args.checkpoint, args.steps, args.output, args.device)), indent=2))
+    result = forecast_latest(args.config, args.checkpoint, args.steps, args.output, args.device)
+    for warning in result["warnings"]:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    print(json.dumps(public_summary(result), indent=2))
 
 
 if __name__ == "__main__":
