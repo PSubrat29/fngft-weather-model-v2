@@ -1,0 +1,59 @@
+data:
+  # Replace this with your real dataset file, Zarr store, GRIB file, or a directory
+  # containing sequentially arriving files.
+  source: /path/to/your/realtime_weather_data
+  format: auto
+  engine: null
+  time_dim: time
+  lat_dim: lat
+  lon_dim: lon
+  variables:
+    u: u10
+    v: v10
+    theta: theta2m
+    q: q2m
+  level_dim: null
+  level_value: null
+  time_step_hours: null
+  train_start: "2024-01-01"
+  train_end: "2025-12-31T23:59:59"
+  val_start: "2026-01-01"
+  val_end: "2026-06-30T23:59:59"
+  test_start: "2026-07-01"
+  test_end: "2026-09-30T23:59:59"
+  longitude_periodic: true
+
+model:
+  in_channels: 4
+  hidden: 48
+  memory_dim: 64
+  memory_heads: 4
+  memory_layers: 2
+  history: 8
+  alpha_min: 0.25
+  alpha_max: 2.0
+  beta_min: 0.10
+  beta_max: 0.99
+  basis_orders: 8
+  operator_sigma: 0.85
+  dt_hours: 1.0
+  coriolis_scale: 1.0
+  stratification_scale: 0.10
+  diffusion_scale: 0.0001
+  closure_scale: 0.05
+  fractional_scale: 0.01
+  residual_scale: 0.02
+
+training:
+  batch_size: 4
+  epochs: 5
+  learning_rate: 0.0002
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  rollout_steps: 1
+  num_workers: 0
+  max_train_windows: null
+  max_val_windows: 256
+  seed: 42
+  device: auto
+  checkpoint: artifacts/fngft_real.pt
