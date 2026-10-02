@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FNGFT-AI Forecast</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f4f4f2;
+    --surface-1: #fcfcfb;
+    --border: #e2e1dc;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #7a7974;
+    --accent: #2a78d6;
+    --good: #0ca30c;
+    --critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #111110;
+      --surface-1: #1a1a19;
+      --border: #2e2e2c;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted: #908f87;
+      --accent: #3987e5;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #111110;
+    --surface-1: #1a1a19;
+    --border: #2e2e2c;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #908f87;
+    --accent: #3987e5;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text-primary);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  p.sub { margin: 0 0 20px; color: var(--text-secondary); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px; min-width: 0; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; font-size: 14px; }
+  dt { color: var(--text-secondary); }
+  dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  .status { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-bottom: 12px; }
+  label { display: flex; flex-direction: column; font-size: 13px; color: var(--text-secondary); gap: 4px; }
+  select, input[type=number], button { font: inherit; padding: 6px 10px; border-radius: 6px;
+         border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary); }
+  button { background: var(--accent); color: #fff; border-color: var(--accent); cursor: pointer; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .maps { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 20px 16px; margin-top: 12px; }
+  a { color: var(--accent); }
+  figure { margin: 0; min-width: 0; }
+  figcaption { font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
+  .canvas-wrap { position: relative; }
+  canvas.map { width: 100%; height: auto; display: block; border-radius: 4px; image-rendering: pixelated; }
+  .bar { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted);
+         margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .bar canvas { flex: 1; height: 10px; min-width: 40px; border-radius: 2px; }
+  .tip { position: absolute; pointer-events: none; background: var(--surface-1); color: var(--text-primary);
+         border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 12px; white-space: nowrap;
+         box-shadow: 0 2px 8px rgba(0,0,0,.15); display: none; z-index: 2; font-variant-numeric: tabular-nums; }
+  .msg { color: var(--text-secondary); font-size: 14px; }
+  .err { color: var(--critical); font-size: 14px; overflow-wrap: anywhere; }
+  code { font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>FNGFT-AI forecast service</h1>
+  <p class="sub">Real-data research prototype · fractional closure + physics proxy</p>
+
+  <div class="grid">
+    <section class="card" aria-labelledby="h-status">
+      <h2 id="h-status">Service</h2>
+      <dl id="status"><dt>Status</dt><dd>loading…</dd></dl>
+    </section>
+    <section class="card" aria-labelledby="h-model">
+      <h2 id="h-model">Model</h2>
+      <dl id="model"><dt>Model</dt><dd class="msg">not loaded</dd></dl>
+    </section>
+  </div>
+
+  <section class="card" style="margin-top:16px" aria-labelledby="h-fc">
+    <h2 id="h-fc">Latest forecast</h2>
+    <div class="controls">
+      <label>Steps <input id="steps" type="number" min="1" max="24" value="4" style="width:80px"></label>
+      <button id="run" type="button">Run forecast</button>
+      <label>Variable <select id="var"></select></label>
+      <label>Lead time <select id="lead"></select></label>
+    </div>
+    <div id="fc-msg" class="msg">Runs the model on the newest file in the server's configured data source.</div>
+    <div class="maps" id="maps" hidden>
+      <figure><figcaption id="cap-field">Forecast</figcaption>
+        <div class="canvas-wrap"><canvas class="map" id="c-field"></canvas><div class="tip"></div></div>
+        <div class="bar" id="bar-field"></div></figure>
+      <figure><figcaption>alpha (spatial fractional order)</figcaption>
+        <div class="canvas-wrap"><canvas class="map" id="c-alpha"></canvas><div class="tip"></div></div>
+        <div class="bar" id="bar-alpha"></div></figure>
+      <figure><figcaption>beta (memory exponent)</figcaption>
+        <div class="canvas-wrap"><canvas class="map" id="c-beta"></canvas><div class="tip"></div></div>
+        <div class="bar" id="bar-beta"></div></figure>
+      <figure><figcaption>kappa (closure strength)</figcaption>
+        <div class="canvas-wrap"><canvas class="map" id="c-kappa"></canvas><div class="tip"></div></div>
+        <div class="bar" id="bar-kappa"></div></figure>
+    </div>
+  </section>
+
+  <p class="msg" style="margin-top:16px">API reference: <a href="docs">/docs</a> · <a href="health">/health</a> · <a href="model-info">/model-info</a></p>
+</main>
+<script>
+"use strict";
+// Sequential: one hue (blue), light -> dark. Diverging (signed winds): blue <-> red with a gray midpoint.
+const SEQ = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"];
+const DIV = ["#0d366b", "#256abf", "#6da7ec", "#cde2fb", "#f0efec", "#f6c9c8", "#ec8a89", "#e34948", "#8f1f1f"];
+const SIGNED = new Set(["u", "v"]);
+const NAMES = { u: "u (eastward wind)", v: "v (northward wind)", theta: "theta (temperature)", q: "q (humidity)" };
+let data = null;
+
+const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+function ramp(stops, t) {
+  t = Math.min(1, Math.max(0, t));
+  const x = t * (stops.length - 1), i = Math.min(stops.length - 2, Math.floor(x)), f = x - i;
+  const a = hex(stops[i]), b = hex(stops[i + 1]);
+  return a.map((v, k) => Math.round(v + (b[k] - v) * f));
+}
+const fmt = v => (Math.abs(v) >= 1000 || (Math.abs(v) < 0.01 && v !== 0)) ? v.toExponential(2) : v.toFixed(2);
+
+function drawMap(id, field, signed, label, unit) {
+  const canvas = document.getElementById("c-" + id);
+  const h = field.length, w = field[0].length;
+  canvas.width = w; canvas.height = h;
+  let lo = Infinity, hi = -Infinity;
+  for (const row of field) for (const x of row) { if (x < lo) lo = x; if (x > hi) hi = x; }
+  if (signed) { const m = Math.max(Math.abs(lo), Math.abs(hi)) || 1; lo = -m; hi = m; }
+  if (hi === lo) hi = lo + 1;
+  const stops = signed ? DIV : SEQ;
+  const ctx = canvas.getContext("2d"), img = ctx.createImageData(w, h);
+  for (let r = 0; r < h; r++) {           // latitude ascending in data: draw north at the top
+    const row = field[h - 1 - r];
+    for (let c = 0; c < w; c++) {
+      const [R, G, B] = ramp(stops, (row[c] - lo) / (hi - lo)), k = 4 * (r * w + c);
+      img.data[k] = R; img.data[k + 1] = G; img.data[k + 2] = B; img.data[k + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const bar = document.getElementById("bar-" + id);
+  bar.innerHTML = "";
+  const lab = document.createElement("span"); lab.textContent = fmt(lo);
+  const cb = document.createElement("canvas"); cb.width = 128; cb.height = 1;
+  const g = cb.getContext("2d");
+  for (let i = 0; i < 128; i++) { const [R, G, B] = ramp(stops, i / 127); g.fillStyle = `rgb(${R},${G},${B})`; g.fillRect(i, 0, 1, 1); }
+  const lab2 = document.createElement("span"); lab2.textContent = fmt(hi) + (unit ? " " + unit : "");
+  bar.append(lab, cb, lab2);
+  const tip = canvas.parentElement.querySelector(".tip");
+  canvas.onmousemove = ev => {
+    const rect = canvas.getBoundingClientRect();
+    const c = Math.floor((ev.clientX - rect.left) / rect.width * w), r = Math.floor((ev.clientY - rect.top) / rect.height * h);
+    if (c < 0 || c >= w || r < 0 || r >= h) { tip.style.display = "none"; return; }
+    const i = h - 1 - r;
+    tip.textContent = `lat ${data.lat[i].toFixed(2)}, lon ${data.lon[c].toFixed(2)} · ${label} ${fmt(field[i][c])}${unit ? " " + unit : ""}`;
+    tip.style.display = "block";
+    tip.style.left = Math.min(ev.clientX - rect.left + 12, rect.width - tip.offsetWidth) + "px";
+    tip.style.top = (ev.clientY - rect.top + 12) + "px";
+  };
+  canvas.onmouseleave = () => { tip.style.display = "none"; };
+}
+
+function render() {
+  if (!data) return;
+  const v = document.getElementById("var").value, lead = +document.getElementById("lead").value;
+  const unit = (data.units || {})[v] || "";
+  document.getElementById("cap-field").textContent = `${NAMES[v]} · valid ${data.times[lead].replace("T", " ").slice(0, 16)} UTC`;
+  drawMap("field", data.fields[v][lead], SIGNED.has(v), v, unit);
+  for (const k of ["alpha", "beta", "kappa"]) drawMap(k, data.orders[k], false, k, "");
+}
+
+function setList(el, rows) {
+  el.innerHTML = "";
+  for (const [k, v] of rows) {
+    const dt = document.createElement("dt"); dt.textContent = k;
+    const dd = document.createElement("dd");
+    if (v instanceof Node) dd.append(v); else dd.textContent = v ?? "—";
+    el.append(dt, dd);
+  }
+}
+
+async function loadStatus() {
+  try {
+    const h = await (await fetch("health")).json();
+    const s = document.createElement("span"); s.className = "status";
+    const d = document.createElement("span"); d.className = "dot";
+    d.style.background = h.model_loaded ? "var(--good)" : "var(--critical)";
+    s.append(d, document.createTextNode(h.model_loaded ? "Model loaded" : "Model not loaded"));
+    setList(document.getElementById("status"), [
+      ["Status", s], ["Checkpoint", h.model_path], ["Device", h.device], ["Version", h.version],
+      ["Latest-file mode", h.latest_forecast_enabled ? "enabled" : "disabled (set FNGFT_CONFIG)"],
+      ...(h.load_error ? [["Load error", h.load_error]] : []),
+    ]);
+    document.getElementById("run").disabled = !(h.model_loaded && h.latest_forecast_enabled);
+    if (!h.model_loaded) return;
+    const m = await (await fetch("model-info")).json();
+    const hist = m.training_history || [];
+    const last = hist.find(r => r.epoch === m.best_epoch) || hist[hist.length - 1];
+    setList(document.getElementById("model"), [
+      ["Variables", m.variables ? Object.entries(m.variables).map(([k, v]) => `${k}=${v}`).join(", ") : null],
+      ["Grid", `${m.grid_shape[0]} × ${m.grid_shape[1]} (lat ${m.lat_range?.map(x => x.toFixed(1)).join("…")}, lon ${m.lon_range?.map(x => x.toFixed(1)).join("…")})`],
+      ["Time step", `${m.dt_hours} h · history ${m.history} steps`],
+      ["Trained on", (m.train_period || []).join(" → ")],
+      ["Best epoch", m.best_epoch],
+      ["Val MSE / persistence", last && isFinite(last.val_mse) ? `${last.val_mse.toFixed(4)} / ${last.persistence_val_mse.toFixed(4)}` : null],
+      ["Created", m.provenance?.created_utc],
+    ]);
+  } catch (e) {
+    setList(document.getElementById("status"), [["Status", "service unreachable"]]);
+  }
+}
+
+document.getElementById("run").onclick = async () => {
+  const btn = document.getElementById("run"), msg = document.getElementById("fc-msg");
+  btn.disabled = true; msg.className = "msg"; msg.textContent = "Running forecast…";
+  try {
+    const r = await fetch(`forecast-latest?steps=${document.getElementById("steps").value}`);
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.detail || r.statusText);
+    data = body;
+    const vs = document.getElementById("var"), ls = document.getElementById("lead");
+    vs.innerHTML = Object.keys(data.fields).map(k => `<option value="${k}">${k}</option>`).join("");
+    ls.innerHTML = data.times.map((t, i) => `<option value="${i}">+${(i + 1) * data.dt_hours} h</option>`).join("");
+    msg.textContent = `Analysis ${data.analysis_time.replace("T", " ").slice(0, 16)} UTC from ${data.source}. Hover a map for values.`;
+    document.getElementById("maps").hidden = false;
+    render();
+  } catch (e) {
+    msg.className = "err"; msg.textContent = "Forecast failed: " + e.message;
+  } finally { btn.disabled = false; }
+};
+document.getElementById("var").onchange = render;
+document.getElementById("lead").onchange = render;
+loadStatus();
+</script>
+</body>
+</html>

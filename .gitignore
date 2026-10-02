@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Model artifacts and local outputs
+artifacts/
+*.pt
+*.pth
+*.ckpt
+
+# Datasets (keep large data out of git)
+data/
+*.nc
+*.nc4
+*.grib
+*.grb
+*.grib2
+*.grb2
+*.zarr/
+*.idx
+
+# Scratch
+tmp_*
+temp_*
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

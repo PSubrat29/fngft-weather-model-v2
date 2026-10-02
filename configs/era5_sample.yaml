@@ -1,0 +1,31 @@
+# Real ERA5 reanalysis sample (850 hPa, 6-hourly, 5.625 deg global grid, 2018-2020).
+# Create the data file first:  python scripts/download_era5_sample.py
+data:
+  source: data/era5_sample_850hPa_2018_2020.nc
+  time_dim: time
+  lat_dim: latitude
+  lon_dim: longitude
+  variables:
+    u: u_component_of_wind
+    v: v_component_of_wind
+    theta: temperature
+    q: specific_humidity
+  level_dim: level
+  level_value: 850
+  train_start: "2018-01-01"
+  train_end: "2019-12-31T23:59:59"
+  val_start: "2020-01-01"
+  val_end: "2020-06-30T23:59:59"
+  test_start: "2020-07-01"
+  test_end: "2020-12-31T23:59:59"
+
+model:
+  history: 8
+
+training:
+  batch_size: 8
+  epochs: 10
+  learning_rate: 0.001
+  max_val_windows: 512
+  early_stopping_patience: 3
+  checkpoint: artifacts/era5_sample.pt
