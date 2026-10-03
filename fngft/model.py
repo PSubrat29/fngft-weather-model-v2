@@ -38,6 +38,26 @@ class MemoryTransformer(nn.Module):
         return self.norm(x[:, -1])
 
 
+class GridConv2d(nn.Conv2d):
+    """3x3 convolution that wraps around in longitude on periodic (global) grids.
+
+    Latitude is zero-padded; longitude is circularly padded when ``periodic_x`` so the forecast does not
+    depend on where the 0/360 seam lies. Parameter names match ``nn.Conv2d`` (old checkpoints load).
+    """
+
+    def __init__(self, in_channels: int, out_channels: int, periodic_x: bool):
+        super().__init__(in_channels, out_channels, 3, padding=0)
+        self.periodic_x = periodic_x
+
+    def forward(self, x: Tensor) -> Tensor:
+        if self.periodic_x:
+            x = F.pad(x, (1, 1, 0, 0), mode="circular")
+            x = F.pad(x, (0, 0, 1, 1))
+        else:
+            x = F.pad(x, (1, 1, 1, 1))
+        return F.conv2d(x, self.weight, self.bias)
+
+
 class OrderHead(nn.Module):
     """Predicts bounded alpha/beta fields and positive kappa from X_t and H_t."""
 
@@ -45,9 +65,9 @@ class OrderHead(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.state_net = nn.Sequential(
-            nn.Conv2d(cfg.in_channels, cfg.hidden, 3, padding=1),
+            GridConv2d(cfg.in_channels, cfg.hidden, cfg.longitude_periodic),
             nn.GELU(),
-            nn.Conv2d(cfg.hidden, cfg.hidden, 3, padding=1),
+            GridConv2d(cfg.hidden, cfg.hidden, cfg.longitude_periodic),
             nn.GELU(),
         )
         self.out = nn.Conv2d(cfg.hidden + cfg.memory_dim, 3, 1)
@@ -100,9 +120,9 @@ class FractionalClosure(nn.Module):
             periodic_x=cfg.longitude_periodic,
         )
         self.feature = nn.Sequential(
-            nn.Conv2d(cfg.in_channels + cfg.memory_dim, cfg.hidden, 3, padding=1),
+            GridConv2d(cfg.in_channels + cfg.memory_dim, cfg.hidden, cfg.longitude_periodic),
             nn.GELU(),
-            nn.Conv2d(cfg.hidden, cfg.hidden, 3, padding=1),
+            GridConv2d(cfg.hidden, cfg.hidden, cfg.longitude_periodic),
             nn.GELU(),
         )
         self.force = nn.Conv2d(cfg.hidden, 2, 1)

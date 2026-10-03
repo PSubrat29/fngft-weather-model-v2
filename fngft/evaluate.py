@@ -76,8 +76,19 @@ def evaluate(
         raw, times, lat, lon = prepare_dataset(ds, cfg.data, crop_to_splits=True)
     state = normalizer.transform(raw)
     del raw
-    tr_lo, tr_hi = time_slice_indices(times, cfg.data.train_start, cfg.data.train_end)
-    clim = torch.from_numpy(state[tr_lo:tr_hi].mean(axis=0, dtype=np.float64)).unsqueeze(0)  # [1,4,lat,lon]
+    stored = blob.get("climatology")
+    if stored is not None and tuple(np.shape(stored)) == state.shape[1:]:
+        clim = torch.from_numpy(np.asarray(stored, dtype=np.float64)).unsqueeze(0)  # [1,4,lat,lon]
+    else:  # checkpoints from 0.3.0, or a different grid: compute it from the training period in the data
+        try:
+            tr_lo, tr_hi = time_slice_indices(times, cfg.data.train_start, cfg.data.train_end)
+        except ValueError as exc:
+            raise ValueError(
+                "The checkpoint stores no climatology for this grid and the data source does not contain the "
+                "training period, so the climatology baseline cannot be computed. Retrain with this version "
+                "or include the training period in data.source."
+            ) from exc
+        clim = torch.from_numpy(state[tr_lo:tr_hi].mean(axis=0, dtype=np.float64)).unsqueeze(0)
     ranges = {
         "train": (cfg.data.train_start, cfg.data.train_end),
         "val": (cfg.data.val_start, cfg.data.val_end),

@@ -25,7 +25,9 @@ Overall (lead 1, standardized units): `rmse_standardized`, `rmse_persistence_sta
 `mae_standardized`, `anomaly_correlation`, and mean alpha/beta/kappa.
 
 The climatology is a time mean over the training period, not a seasonal (day-of-year) climatology,
-so for multi-month test periods it is a conservative baseline.
+so for multi-month test periods it is a conservative baseline. It is stored in the checkpoint at
+training time, so a held-out file that contains only the test period can be evaluated on its own
+(0.3.0 checkpoints compute it from the training period in the data source).
 
 ## Interpretation
 

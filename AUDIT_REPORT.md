@@ -111,42 +111,58 @@ The default also confirmed on 240×121 (1.5°) grids with poles: 6-hourly 10 day
 hourly 4 days max wind 80 m/s, q ≥ 0; boundary-row error equals persistence; the 1.5° 6-hourly model
 beats persistence in the training log (0.109 vs 0.178).
 
-## 4. Current results on real ERA5 (`configs/era5_sample.yaml`)
+## 4. Round 3 — re-verification of the fixes
+
+Three further independent checks re-ran every earlier reproduction against the fixed branch: 44 of 45
+were confirmed fixed (the remaining one, `train --epochs 0` from the command line, is now fixed too).
+They also found these, all fixed in 0.3.1 with regression tests (45 tests):
+
+| Severity | Defect | Fix |
+|---|---|---|
+| major (pre-existing since v0.2) | the learned 3×3 convolutions zero-padded at the 0/360° seam: forecasts depended on where the seam lay and a temperature discontinuity grew along the prime meridian (hottest point of 10-day runs at lon 0, up to 335 K) | convolutions wrap around in longitude on global grids; forecasts are identical when the seam is moved |
+| minor | humidity drifted upward in long hourly runs without a warning (z-based check too loose) | plausibility check uses each variable's training range stored in the checkpoint (flags values more than half the range outside it) and winds > 150 m/s; genuine extremes such as a cyclone are no longer flagged |
+| minor | evaluating a file without the training period failed (climatology computed from the data) | per-grid-point climatology stored in the checkpoint |
+| minor | `inspect` rejected per-variable archives whose files end at different times, which training and forecasting accept | leading/trailing incomplete time steps skipped everywhere and reported |
+| minor | `level_value` without `level_dim`, null/string region bounds, `coarsen: 2.5`, float/null `closure_boundary_rows`, unquoted year `2019`, glob inside a folder named `[..]`, unweighted `train_mse` next to weighted `val_mse` | validated, handled or made consistent |
+
+## 5. Current results on real ERA5 (`configs/era5_sample.yaml`)
 
 Public ERA5 from the WeatherBench2 archive: 850 hPa u, v, temperature, specific humidity; 6-hourly;
 5.625° global grid (32 × 64); 2018–2020. Train 2018–2019, validate Jan–Jun 2020, **test Jul–Dec 2020
-(held out)**. Default model, 10 epochs, 2-step training, CPU (~10 minutes).
+(held out)**. Default model, 10 epochs, 2-step training, CPU (~10–12 minutes).
 
-Validation (area-weighted MSE, standardized): 0.046 vs persistence 0.134.
+Validation (area-weighted MSE, standardized): 0.045 vs persistence 0.134.
 
 Held-out test period (733 windows; area-weighted RMSE in physical units; climatology = per-grid-point
 training mean):
 
 | Lead | u (m/s) model / persistence / climatology | v (m/s) | temperature (K) | q (g/kg) | skill vs persistence | ACC u / v / T / q |
 |---|---|---|---|---|---|---|
-| +6 h | 1.39 / 2.03 / 5.42 | 1.45 / 2.56 / 5.13 | 0.96 / 1.19 / 5.47 | 0.47 / 0.61 / 2.09 | 20–43% | 0.97 / 0.96 / 0.99 / 0.97 |
-| +12 h | 1.99 / 3.23 / 5.42 | 2.12 / 4.10 / 5.13 | 1.41 / 1.91 / 5.47 | 0.68 / 0.96 / 2.09 | 26–48% | 0.93 / 0.91 / 0.97 / 0.95 |
-| +18 h | 2.53 / 4.06 / 5.42 | 2.71 / 5.06 / 5.13 | 1.63 / 2.34 / 5.47 | 0.82 / 1.19 / 2.09 | 30–47% | 0.89 / 0.85 / 0.96 / 0.92 |
-| +24 h | 2.95 / 4.60 / 5.42 | 3.17 / 5.64 / 5.13 | 1.80 / 2.65 / 5.47 | 0.93 / 1.34 / 2.09 | 31–44% | 0.84 / 0.79 / 0.95 / 0.90 |
+| +6 h | 1.37 / 2.02 / 5.42 | 1.44 / 2.56 / 5.13 | 0.96 / 1.19 / 5.47 | 0.48 / 0.61 / 2.09 | 19–44% | 0.97 / 0.96 / 0.98 / 0.97 |
+| +12 h | 1.96 / 3.23 / 5.42 | 2.10 / 4.10 / 5.13 | 1.42 / 1.91 / 5.47 | 0.69 / 0.96 / 2.09 | 26–49% | 0.93 / 0.91 / 0.97 / 0.94 |
+| +18 h | 2.49 / 4.06 / 5.42 | 2.67 / 5.06 / 5.13 | 1.64 / 2.34 / 5.47 | 0.83 / 1.19 / 2.09 | 30–47% | 0.89 / 0.85 / 0.96 / 0.92 |
+| +24 h | 2.90 / 4.59 / 5.42 | 3.14 / 5.64 / 5.13 | 1.81 / 2.65 / 5.47 | 0.94 / 1.34 / 2.09 | 30–44% | 0.85 / 0.79 / 0.95 / 0.90 |
 
-10-day rollouts from 8 test-period starts (same harness as above):
+10-day rollouts from 8 test-period starts:
 
-| Lead | u RMSE model / persistence / climatology | temperature RMSE | max wind anywhere |
-|---|---|---|---|
-| +48 h | 4.30 / 5.74 / 5.40 m/s | 2.79 / 3.50 / 5.53 K | 34 m/s |
-| +72 h | 5.13 / 6.15 / 5.40 m/s | 3.58 / 3.78 / 5.54 K | 36 m/s |
-| +120 h | 5.97 / 6.70 / 5.48 m/s | 4.80 / 4.12 / 5.50 K | 39 m/s |
-| +240 h | 6.89 / 7.09 / 5.51 m/s | 7.00 / 4.31 / 5.58 K | 29 m/s |
+| Lead | u RMSE model / persistence / climatology (m/s) | temperature (K) | q (g/kg) | max wind anywhere |
+|---|---|---|---|---|
+| +48 h | 4.27 / 5.74 / 5.40 | 2.81 / 3.50 / 5.53 | 1.39 / 1.69 / 2.10 | 35 m/s |
+| +72 h | 5.21 / 6.15 / 5.40 | 3.61 / 3.78 / 5.54 | 1.66 / 1.75 / 2.09 | 37 m/s |
+| +120 h | 6.09 / 6.70 / 5.48 | 4.88 / 4.12 / 5.50 | 2.06 / 1.84 / 2.11 | 33 m/s |
+| +240 h | 6.84 / 7.09 / 5.51 | 7.59 / 4.31 / 5.58 | 2.66 / 1.94 / 2.12 | 37 m/s |
 
 (0.3.0 on the same harness: 316 m/s at +120 h, 4,699 m/s and temperatures of −338…686 K at +240 h.)
 
 **Usable lead time:** at this coarse resolution and model size the forecast beats persistence for all
 variables up to about 3 days, and for winds up to 10 days; temperature and humidity drift beyond about
-3 days (bounded, but worse than persistence and above climatology by day 10). Forecasts longer than
-that should be treated as experimental.
+3 days (bounded, but worse than persistence and above climatology by day 10). On hourly data
+(1.5°, a 2-week training period) the forecast beats persistence up to about 1–1.5 days; humidity drift
+in longer hourly runs is flagged by the plausibility check. Forecasts beyond those leads should be
+treated as experimental.
 
 Observation for the analysis phase: the learned `alpha` field sits at its lower bound
-(`alpha_min = 0.25`) everywhere on this dataset (mean beta 0.62, mean kappa 2.9). Whether that is a
+(`alpha_min = 0.25`) everywhere on this dataset (mean beta 0.61, mean kappa 2.8). Whether that is a
 property of coarse 6-hourly data or of the bound itself is one of the questions to examine on your
 datasets (e.g. by lowering `alpha_min` and comparing).
 

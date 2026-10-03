@@ -34,7 +34,8 @@ variables:
 `data.source` may be one file, a folder (all `.nc/.nc4/.grib/.grb/.grib2/.grb2` files are combined
 by their coordinates), a glob pattern, or a Zarr store. Archives split by time (one file per
 year/month/day) and by variable (one file per variable) work directly, for training and for
-`forecast-latest`.
+`forecast-latest`. When the files of different variables start or end at different times, the time
+steps where a variable is entirely missing are skipped at the start and end of the record.
 
 ## Grid
 

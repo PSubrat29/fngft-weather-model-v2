@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import glob
+import os
 from pathlib import Path
 from typing import List
 
@@ -47,7 +48,9 @@ def resolve_sources(source: str) -> List[str]:
     if p.exists():
         return [source]
     if any(ch in source for ch in "*?["):
-        matches = sorted(m for m in glob.glob(source) if Path(m).suffix.lower() in SUPPORTED_SUFFIXES or _is_zarr(m))
+        head, tail = os.path.split(source)
+        pattern = os.path.join(glob.escape(head), tail) if head and Path(head).is_dir() else source
+        matches = sorted(m for m in glob.glob(pattern) if Path(m).suffix.lower() in SUPPORTED_SUFFIXES or _is_zarr(m))
         if not matches:
             raise FileNotFoundError(f"No supported files match data.source pattern: {source}")
         return matches
@@ -111,13 +114,26 @@ def inspect_dataset(config: DataConfig, *, latest: bool = False) -> DatasetProfi
 
     The profile describes the data the model will actually see (after level, region and coarsen
     selection). With ``latest=True`` only the most recent time steps are checked, which is what
-    ``forecast-latest`` uses. Missing values are counted; with ``missing_values: error`` any NaN fails.
+    ``forecast-latest`` uses. Leading/trailing time steps where a variable is entirely missing (files
+    of different variables ending at different times) are skipped, as training and forecasting do,
+    and reported as ``incomplete_edge_steps``. Remaining missing values are counted; with
+    ``missing_values: error`` any NaN fails.
     """
-    from .preprocess import count_missing, resolve_longitude_periodic, select_dataset
+    from .preprocess import count_missing, incomplete_steps, resolve_longitude_periodic, select_dataset
     from .schema import CANONICAL_CHANNELS
 
     with open_weather_dataset(config) as ds:
-        work, info = select_dataset(ds, config, tail_steps=LATEST_INSPECT_STEPS if latest else None)
+        lookback = LATEST_INSPECT_STEPS + 48 if latest else None
+        work, info = select_dataset(ds, config, tail_steps=lookback)
+        incomplete = incomplete_steps(work, config)
+        complete = np.flatnonzero(~incomplete)
+        if complete.size == 0:
+            raise ValueError("No time step contains all four variables")
+        lo, hi = int(complete[0]), int(complete[-1]) + 1
+        if latest:
+            lo = max(lo, hi - LATEST_INSPECT_STEPS)
+        dropped = int(incomplete[:lo].sum() + incomplete[hi:].sum()) if not latest else int(incomplete[hi:].sum())
+        work = work.isel({config.time_dim: slice(lo, hi)})
         times = np.asarray(work[config.time_dim].values)
         lat = np.asarray(work[config.lat_dim].values, dtype=float)
         lon = np.asarray(work[config.lon_dim].values, dtype=float)
@@ -150,4 +166,5 @@ def inspect_dataset(config: DataConfig, *, latest: bool = False) -> DatasetProfi
         selected_level=info["level"],
         longitude_periodic=resolve_longitude_periodic(lon, config),
         missing_value_count=missing,
+        incomplete_edge_steps=dropped,
     )

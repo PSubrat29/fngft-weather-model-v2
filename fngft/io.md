@@ -30,6 +30,9 @@ returns a `DatasetProfile` of the data the model will actually see: time coverag
 timestamps (`time_gaps`), grid size/spacing/extent, whether longitude is global and periodic, the
 selected level, variable units and the number of missing values. With `missing_values: error` any
 NaN fails here instead of later in training. `latest=True` checks only the most recent 24 time steps.
+Leading/trailing time steps in which a variable is entirely missing (files of different variables
+that start or end at different times) are skipped exactly as training and forecasting skip them, and
+reported as `incomplete_edge_steps`.
 
 ## Real-time behavior
 

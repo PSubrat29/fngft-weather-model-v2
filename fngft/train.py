@@ -29,6 +29,7 @@ from .preprocess import (
     resolve_longitude_periodic,
     select_dataset,
     state_from_selection,
+    time_slice_indices,
 )
 from .schema import CANONICAL_CHANNELS
 
@@ -97,8 +98,15 @@ def train(config: AppConfig, *, log=print) -> Path:
     model_cfg = replace(config.model, dt_hours=dt_hours, longitude_periodic=periodic)
 
     normalizer = build_train_normalizer(state_raw, times, config.data)
+    tr_lo, tr_hi = time_slice_indices(times, config.data.train_start, config.data.train_end)
+    data_range = {
+        "min": state_raw[tr_lo:tr_hi].min(axis=(0, 2, 3)).astype(float).tolist(),
+        "max": state_raw[tr_lo:tr_hi].max(axis=(0, 2, 3)).astype(float).tolist(),
+    }
     state = normalizer.transform(state_raw)
     del state_raw
+    # Per-grid-point training climatology (standardized), stored so evaluation does not need the training data.
+    climatology = state[tr_lo:tr_hi].mean(axis=0, dtype=np.float64).astype(np.float32)
     train_ds = TemporalWindowDataset(
         state,
         times,
@@ -168,7 +176,7 @@ def train(config: AppConfig, *, log=print) -> Path:
             history = history.to(device, non_blocking=True)
             future = future.to(device, non_blocking=True)
             pred, info = model(history, lat_t, lon_t, steps=config.training.rollout_steps)
-            loss, mse = _loss_over_rollout(pred, future, info)
+            loss, _ = _loss_over_rollout(pred, future, info)
             if not torch.isfinite(loss):
                 raise RuntimeError(
                     f"Non-finite training loss at epoch {epoch}. Lower training.learning_rate, check the input data "
@@ -181,9 +189,10 @@ def train(config: AppConfig, *, log=print) -> Path:
             if scheduler:
                 scheduler.step()
             running += loss.item()
-            running_mse += mse.item()
+            with torch.no_grad():
+                running_mse += float((((pred - future) ** 2) * w_dev).mean())
         train_mean = running / max(len(train_loader), 1)
-        train_mse = running_mse / max(len(train_loader), 1)
+        train_mse = running_mse / max(len(train_loader), 1)  # area-weighted, like val_mse
 
         val_mean, val_mse = float("nan"), float("nan")
         if val_loader:
@@ -226,6 +235,8 @@ def train(config: AppConfig, *, log=print) -> Path:
                     "grid": {"lat": lat.tolist(), "lon": lon.tolist()},
                     "data_units": units,
                     "data_selection": {"level": selection["level"]},
+                    "data_range": data_range,
+                    "climatology": climatology,
                     "training": asdict(config.training),
                     "metrics": {"best_epoch": epoch, "best_score": score, "history": history_log},
                     "provenance": {

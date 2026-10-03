@@ -9,10 +9,13 @@ Defines the complete configuration contract and validates YAML files before any 
 `load_config` reads the file as UTF-8 (a Windows Notepad BOM is accepted) and rejects unknown keys
 (typos such as `sourse:` are reported with the list of allowed keys), null values for required keys,
 and inconsistent values (alpha/beta bounds, `memory_dim` not divisible by `memory_heads`,
-`level_dim` without `level_value`, unknown `format`, `epochs`/`batch_size` < 1, …).
+`level_dim` without `level_value` or `level_value` without `level_dim`, non-integer `coarsen` or
+`closure_boundary_rows`, non-numeric `region` bounds, unknown `format`, `epochs`/`batch_size` < 1, …).
+The same checks apply to command-line overrides such as `train --epochs`.
 
 Split dates are normalised to timezone-naive UTC (`2020-01-01T05:30+05:30` becomes
-`2020-01-01T00:00:00`). A date without a time used as an end covers the whole period:
+`2020-01-01T00:00:00`); an unquoted year such as `2019` is read as that year. A date without a time
+used as an end covers the whole period:
 `train_end: 2019-12-31` includes all of 31 December, `2019-12` all of December. A training range is required; a split whose start is after its end, or any
 two splits that overlap, are rejected so validation/test data cannot leak into training. A split may
 be open-ended (null start or end).

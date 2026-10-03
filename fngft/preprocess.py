@@ -177,22 +177,39 @@ def _channel_array(work: xr.Dataset, config: DataConfig, canonical: str) -> xr.D
     return da.transpose(config.time_dim, config.lat_dim, config.lon_dim)
 
 
+def _complete_span(incomplete: np.ndarray) -> tuple[int, int]:
+    """[lo, hi) of time steps after dropping leading/trailing steps where a variable is entirely missing."""
+    complete = np.flatnonzero(~incomplete)
+    if complete.size == 0:
+        raise ValueError("No time step contains all four variables")
+    return int(complete[0]), int(complete[-1]) + 1
+
+
 def state_from_selection(work: xr.Dataset, config: DataConfig) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Load a dataset returned by ``select_dataset`` into ``state[time, 4, lat, lon]`` (fills NaNs if configured)."""
+    """Load a dataset returned by ``select_dataset`` into ``state[time, 4, lat, lon]``.
+
+    Leading/trailing time steps in which a variable is entirely missing are dropped (files of different
+    variables that start or end at different times); remaining NaNs are filled if configured.
+    """
     times = np.asarray(work[config.time_dim].values)
     lat = np.asarray(work[config.lat_dim].values, dtype=np.float32)
     lon = np.asarray(work[config.lon_dim].values, dtype=np.float32)
     state = np.empty((len(times), len(CANONICAL_CHANNELS), lat.size, lon.size), dtype=np.float32)
-    if config.missing_values == "interpolate":
+    for c, canonical in enumerate(CANONICAL_CHANNELS):
+        state[:, c] = _channel_array(work, config, canonical).values
+    lo, hi = _complete_span(np.isnan(state).all(axis=(2, 3)).any(axis=1))
+    if (lo, hi) != (0, len(times)):
+        state, times = state[lo:hi], times[lo:hi]
+    if config.missing_values == "interpolate" and not np.isfinite(state).all():
         cuts = split_boundaries(times, config)
         train_lo, train_hi = 0, len(times)
         try:
             train_lo, train_hi = time_slice_indices(times, config.train_start, config.train_end)
         except ValueError:
             pass
-    for c, canonical in enumerate(CANONICAL_CHANNELS):
-        state[:, c] = _channel_array(work, config, canonical).values
-        if config.missing_values == "interpolate" and not np.isfinite(state[:, c]).all():
+        for c in range(len(CANONICAL_CHANNELS)):
+            if np.isfinite(state[:, c]).all():
+                continue
             train_part = state[train_lo:train_hi, c]
             finite = train_part[np.isfinite(train_part)]
             fill = float(finite.mean()) if finite.size else 0.0
@@ -220,20 +237,13 @@ def prepare_dataset(
     return state_from_selection(work, config)
 
 
-def trim_incomplete_tail(work: xr.Dataset, config: DataConfig) -> xr.Dataset:
-    """Drop trailing time steps where any variable is entirely missing.
-
-    When files of different variables end at different times (e.g. one file per variable updated
-    separately), the combined dataset ends with time steps that exist for some variables only.
-    """
+def incomplete_steps(work: xr.Dataset, config: DataConfig) -> np.ndarray:
+    """Boolean per time step: True where at least one variable is entirely missing (reads the data)."""
     incomplete = np.zeros(work.sizes[config.time_dim], dtype=bool)
     for canonical in CANONICAL_CHANNELS:
         da = _channel_array(work, config, canonical)
         incomplete |= np.asarray(da.isnull().all(dim=[config.lat_dim, config.lon_dim]).values)
-    complete = np.flatnonzero(~incomplete)
-    if complete.size == 0:
-        raise ValueError("None of the most recent time steps contains all four variables")
-    return work.isel({config.time_dim: slice(0, int(complete[-1]) + 1)})
+    return incomplete
 
 
 def count_missing(work: xr.Dataset, config: DataConfig) -> int:

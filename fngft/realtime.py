@@ -15,12 +15,12 @@ from .config import load_config
 from .evaluate import check_variable_mapping, load_checkpoint
 from .io import open_weather_dataset
 from .model import FNGFTWeatherModel
-from .preprocess import Standardizer, infer_time_step_hours, select_dataset, state_from_selection, trim_incomplete_tail
+from .preprocess import Standardizer, infer_time_step_hours, select_dataset, state_from_selection
 from .schema import CANONICAL_CHANNELS, NS_PER_HOUR, time_values_ns
 from .train import resolve_device
 
-# Forecast steps beyond these limits are flagged: standardized values far outside the training data,
-# or winds no real atmosphere produces.
+# Forecast steps beyond these limits are flagged: winds no real atmosphere produces, or (for checkpoints
+# without a stored training range) standardized values far outside the training data.
 PLAUSIBLE_MAX_Z = 10.0
 PLAUSIBLE_MAX_WIND = 150.0
 # Extra recent time steps read so that trailing incomplete steps can be skipped.
@@ -35,6 +35,7 @@ def run_forecast(
     lon: np.ndarray,
     steps: int,
     device: torch.device,
+    data_range: Optional[dict] = None,
 ) -> dict:
     """Forecast ``steps`` time steps from a physical-unit history [history, 4, lat, lon]."""
     history_std = normalizer.transform(history_physical.astype(np.float32))
@@ -47,7 +48,7 @@ def run_forecast(
     forecast_physical = normalizer.inverse(forecast_std)
     if not np.isfinite(forecast_physical).all():
         raise RuntimeError("Model produced non-finite forecast values")
-    warnings, first_bad = plausibility_warnings(forecast_std, forecast_physical)
+    warnings, first_bad = plausibility_warnings(forecast_std, forecast_physical, data_range)
     return {
         "warnings": warnings,
         "first_unphysical_step": first_bad,
@@ -59,19 +60,45 @@ def run_forecast(
     }
 
 
-def plausibility_warnings(forecast_std: np.ndarray, forecast_physical: np.ndarray) -> tuple[list, Optional[int]]:
-    """Flag forecast steps that leave the range of the training data or of physically possible winds."""
+def plausibility_warnings(
+    forecast_std: np.ndarray, forecast_physical: np.ndarray, data_range: Optional[dict] = None
+) -> tuple[list, Optional[int]]:
+    """Flag forecast steps with physically impossible winds or values far outside the training data.
+
+    With ``data_range`` (per-channel training min/max, stored in checkpoints since 0.3.1) a value is
+    flagged when it lies more than half the training range beyond the training min or max; older
+    checkpoints fall back to |standardized value| > 10.
+    """
     steps = forecast_std.shape[0]
-    zmax = np.abs(forecast_std).reshape(steps, -1).max(axis=1)
+    warnings, flagged = [], []
     wind = np.hypot(forecast_physical[:, 0], forecast_physical[:, 1]).reshape(steps, -1).max(axis=1)
-    bad = np.flatnonzero((zmax > PLAUSIBLE_MAX_Z) | (wind > PLAUSIBLE_MAX_WIND))
-    if bad.size == 0:
-        return [], None
-    k = int(bad[0])
-    return [
-        f"Forecast leaves the plausible range from step {k + 1} (max wind {wind[k]:.1f} m/s, "
-        f"max |z| {zmax[k]:.1f}); steps from {k + 1} on are not physically meaningful."
-    ], k + 1
+    bad_wind = np.flatnonzero(wind > PLAUSIBLE_MAX_WIND)
+    if bad_wind.size:
+        k = int(bad_wind[0])
+        flagged.append(k)
+        warnings.append(f"Physically implausible winds from step {k + 1} (max {wind[k]:.1f} m/s); do not use steps from {k + 1} on.")
+    if data_range is not None:
+        lo = np.asarray(data_range["min"], dtype=float)
+        hi = np.asarray(data_range["max"], dtype=float)
+        margin = 0.5 * (hi - lo)
+        for c, name in enumerate(CANONICAL_CHANNELS):
+            field = forecast_physical[:, c].reshape(steps, -1)
+            out = np.flatnonzero((field.min(axis=1) < lo[c] - margin[c]) | (field.max(axis=1) > hi[c] + margin[c]))
+            if out.size:
+                k = int(out[0])
+                flagged.append(k)
+                warnings.append(
+                    f"{name} leaves the range of the training data (by more than half its span) from step {k + 1} "
+                    f"(forecast {field[k].min():.4g}..{field[k].max():.4g}, training {lo[c]:.4g}..{hi[c]:.4g}); treat those steps with caution."
+                )
+    else:
+        zmax = np.abs(forecast_std).reshape(steps, -1).max(axis=1)
+        out = np.flatnonzero(zmax > PLAUSIBLE_MAX_Z)
+        if out.size:
+            k = int(out[0])
+            flagged.append(k)
+            warnings.append(f"Forecast leaves the range of the training data from step {k + 1} (max |z| {zmax[k]:.1f}); treat those steps with caution.")
+    return warnings, (min(flagged) + 1 if flagged else None)
 
 
 def write_forecast(path: str, result: dict, forecast_times: np.ndarray, lat: np.ndarray, lon: np.ndarray, units: dict, attrs: dict) -> str:
@@ -121,9 +148,8 @@ def forecast_latest(config_path: str, checkpoint: str, steps: int = 1, output: s
     hist = model.cfg.history
     with open_weather_dataset(cfg.data) as ds:
         work, _ = select_dataset(ds, cfg.data, tail_steps=hist + LATEST_LOOKBACK_STEPS)
-        work = trim_incomplete_tail(work, cfg.data)
-        work = work.isel({cfg.data.time_dim: slice(-max(hist, 2), None)})
-        raw, times, lat, lon = state_from_selection(work, cfg.data)
+        raw, times, lat, lon = state_from_selection(work, cfg.data)  # drops incomplete trailing steps
+    raw, times = raw[-max(hist, 2):], times[-max(hist, 2):]
     if raw.shape[0] < hist:
         raise ValueError(f"Need at least {hist} time steps in the data; found {raw.shape[0]}")
     if raw.shape[0] >= 2:
@@ -134,7 +160,7 @@ def forecast_latest(config_path: str, checkpoint: str, steps: int = 1, output: s
     expected = (hist - 1) * model.cfg.dt_hours * NS_PER_HOUR
     if hist > 1 and abs((recent[-1] - recent[0]) - expected) > 0.05 * model.cfg.dt_hours * NS_PER_HOUR:
         raise ValueError(f"The last {hist} time steps are not contiguous (missing timestamps); cannot build the history window")
-    result = run_forecast(model, normalizer, raw[-hist:], lat, lon, steps, dev)
+    result = run_forecast(model, normalizer, raw[-hist:], lat, lon, steps, dev, blob.get("data_range"))
     step = np.timedelta64(int(round(model.cfg.dt_hours * 3600)), "s")
     forecast_times = np.array([times[-1] + step * (i + 1) for i in range(steps)]).astype("datetime64[ns]")
     if output:

@@ -28,6 +28,12 @@ next state = physics forecast + closure_scale · closure
 Spatially pools each history frame, adds a learned **positional embedding** (without it attention
 cannot tell the order of the history), and encodes the sequence into `H_t`.
 
+## Convolutions on the sphere
+
+The 3×3 convolutions (`GridConv2d`) wrap around in longitude on global grids and zero-pad in latitude,
+so a forecast does not depend on where the 0/360° seam lies (in 0.3.0 a temperature discontinuity
+grew along the prime meridian). On regional grids both directions are zero-padded.
+
 ## `OrderHead`
 
 Predicts `alpha(x,y) ∈ [alpha_min, alpha_max]`, `beta(x,y) ∈ [beta_min, beta_max]` and positive

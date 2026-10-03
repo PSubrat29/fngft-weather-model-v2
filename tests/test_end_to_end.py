@@ -162,6 +162,50 @@ def test_long_rollout_stays_plausible(trained):
         pred, _ = model(x, lat, lon, steps=40)
     std = pred[0].numpy()
     phys = normalizer.inverse(std)
-    warnings, first_bad = plausibility_warnings(std, phys)
+    warnings, first_bad = plausibility_warnings(std, phys, blob.get("data_range"))
     assert first_bad is None, warnings
     assert phys[:, 3].min() >= -1e-6
+
+
+def test_forecast_does_not_depend_on_the_longitude_seam(trained):
+    from fngft.evaluate import load_checkpoint
+
+    model, normalizer, blob = load_checkpoint(str(trained["checkpoint"]), torch.device("cpu"))
+    assert model.cfg.longitude_periodic
+    ds = xr.open_dataset(trained["work"] / "data" / "demo.nc")
+    hist = np.stack([ds[v].values[-3:] for v in ("u10", "v10", "theta2m", "q2m")], axis=1).astype(np.float32)
+    x = torch.from_numpy(normalizer.transform(hist)).unsqueeze(0)
+    lat, lon = torch.tensor(blob["grid"]["lat"]), torch.tensor(blob["grid"]["lon"])
+    shift = x.shape[-1] // 2
+    with torch.inference_mode():
+        plain, _ = model(x, lat, lon, steps=2)
+        rolled, _ = model(torch.roll(x, shifts=shift, dims=-1), lat, lon, steps=2)
+    assert torch.allclose(torch.roll(rolled, shifts=-shift, dims=-1), plain, atol=1e-4)
+
+
+def test_checkpoint_stores_climatology_and_evaluate_needs_only_the_test_period(trained, tmp_path):
+    blob = torch.load(trained["checkpoint"], weights_only=False)
+    assert np.shape(blob["climatology"]) == (4, 12, 24) and len(blob["data_range"]["max"]) == 4
+    full = evaluate(str(trained["config"]), str(trained["checkpoint"]), "test", steps=1)
+    ds = xr.open_dataset(trained["work"] / "data" / "demo.nc").load()
+    ds.sel(time=slice("2026-02-01", None)).to_netcdf(tmp_path / "test_only.nc")
+    only = evaluate(_variant_config(trained, tmp_path, tmp_path / "test_only.nc"), str(trained["checkpoint"]), "test", steps=1)
+    a, b = full["leads"][0]["variables"]["theta"], only["leads"][0]["variables"]["theta"]
+    assert np.isclose(a["rmse_climatology"], b["rmse_climatology"]) and np.isclose(a["acc"], b["acc"])
+
+
+def test_plausibility_uses_the_training_range():
+    from fngft.realtime import plausibility_warnings
+
+    rng = {"min": [-30.0, -30.0, 250.0, 0.0], "max": [30.0, 30.0, 310.0, 0.02]}
+    phys = np.zeros((3, 4, 2, 2), dtype=np.float32)
+    phys[:, 2] = 280.0
+    phys[:, 3] = 0.01
+    phys[0, 0, 0, 0] = 45.0  # strong but within half a span of the training max: not flagged
+    std = np.zeros_like(phys)
+    assert plausibility_warnings(std, phys, rng) == ([], None)
+    phys[2, 3, 1, 1] = 0.04  # humidity drifting far above anything in training
+    warnings, first = plausibility_warnings(std, phys, rng)
+    assert first == 3 and "q" in warnings[0]
+    phys[1, 0, 0, 0] = 200.0
+    assert plausibility_warnings(std, phys, rng)[1] == 2

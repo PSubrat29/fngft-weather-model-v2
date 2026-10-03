@@ -19,14 +19,16 @@ Trains the model against a real gridded dataset.
 9. Validate each epoch, save the best checkpoint, stop early after `early_stopping_patience` epochs
    without improvement. A non-finite loss stops training with a clear message.
 
-Each epoch prints `val_mse` next to `persistence_val_mse`, both weighted by grid-cell area like
-`evaluate`. The model is only useful when `val_mse` is clearly below the persistence value.
+Each epoch prints `val_mse` next to `persistence_val_mse`; these and `train_mse` in the history file
+are weighted by grid-cell area like `evaluate`. The model is only useful when `val_mse` is clearly below the persistence value.
 
 ## Checkpoint contents
 
 - model weights (including normalization buffers)
 - exact model configuration, including the inferred `dt_hours` and `longitude_periodic`
-- normalization statistics, data configuration and variable units
+- normalization statistics, data configuration, variable units and the selected level
+- per-variable training minimum/maximum (used by the forecast plausibility check) and the
+  per-grid-point training climatology (used by `evaluate`)
 - grid coordinates
 - training configuration, per-epoch history and best epoch
 - provenance: creation time, package/torch versions, git revision, data period, device

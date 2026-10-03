@@ -21,8 +21,11 @@ the archive length.
 
 ## Plausibility warnings
 
-Every forecast step is checked: standardized values beyond ±10 (far outside the training data) or
-winds above 150 m/s are flagged. The summary returns `warnings` and `first_unphysical_step`; the CLI
+Every forecast step is checked. Winds above 150 m/s are physically implausible. Any variable more than
+half its training range below the training minimum or above the training maximum (both stored in the
+checkpoint) is flagged as outside the training data — this catches slow drift such as humidity
+creeping upward, without flagging genuine extremes like a cyclone that lies inside that margin.
+(Checkpoints from 0.3.0 have no stored range; for them |standardized value| > 10 is used.) The summary returns `warnings` and `first_unphysical_step`; the CLI
 prints them to stderr, the NetCDF output stores them in the `warnings` attribute, and the API and
 dashboard show them.
 
