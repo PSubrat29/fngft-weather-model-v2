@@ -33,6 +33,7 @@ class DatasetProfile:
     selected_level: Optional[float] = None
     longitude_periodic: Optional[bool] = None
     missing_value_count: Optional[int] = None
+    incomplete_edge_steps: Optional[int] = None
 
 
 def require_channels(mapping: Dict[str, str]) -> None:

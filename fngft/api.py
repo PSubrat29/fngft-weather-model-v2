@@ -178,7 +178,10 @@ def forecast(req: ForecastRequest):
         x, lon = x[:, :, :, ::-1], lon[::-1]
     physical = x if req.units == "physical" else normalizer.inverse(x)
     try:
-        result = run_forecast(model, normalizer, np.ascontiguousarray(physical), np.ascontiguousarray(lat), np.ascontiguousarray(lon), req.steps, DEVICE)
+        result = run_forecast(
+            model, normalizer, np.ascontiguousarray(physical), np.ascontiguousarray(lat), np.ascontiguousarray(lon),
+            req.steps, DEVICE, state.blob.get("data_range"),
+        )
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

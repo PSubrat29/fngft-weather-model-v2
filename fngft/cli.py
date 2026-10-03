@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .config import load_config
+from .config import load_config, validate_config
 
 
 def _print(obj) -> None:
@@ -123,6 +123,7 @@ def main() -> None:
         overrides = {k: v for k, v in {"epochs": args.epochs, "device": args.device, "checkpoint": args.checkpoint}.items() if v is not None}
         if overrides:
             cfg = replace(cfg, training=replace(cfg.training, **overrides))
+            validate_config(cfg)
         print(f"checkpoint={train(cfg)}")
     elif args.command == "evaluate":
         from .evaluate import evaluate

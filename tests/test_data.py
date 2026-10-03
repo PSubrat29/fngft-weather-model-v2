@@ -229,3 +229,43 @@ def test_date_only_end_covers_the_whole_period(tmp_path):
     assert cfg_dates.data.train_end.startswith("2020-06-30T23:59:59")
     assert cfg_dates.data.val_end.startswith("2020-09-30T23:59:59")
     assert cfg_dates.data.val_start == "2020-07-01T00:00:00"
+
+
+def test_inspect_skips_incomplete_edge_steps(tmp_path):
+    ds = make_ds(n_time=30)
+    for name in VARS.values():
+        part = ds[[name]].isel(time=slice(0, 27 if name == "q" else None))
+        _write(part, tmp_path / "pervar" / f"{name}.nc")
+    config = DataConfig(source=str(tmp_path / "pervar"), variables=VARS)
+    for latest in (False, True):
+        profile = inspect_dataset(config, latest=latest)
+        assert profile.time_end == str(ds.time.values[26]) and profile.incomplete_edge_steps == 3
+    with open_weather_dataset(config) as opened:
+        state, times, *_ = prepare_dataset(opened, config)
+    assert len(times) == 27
+
+
+def test_glob_inside_folder_with_brackets(tmp_path):
+    folder = tmp_path / "ERA5 [2020]"
+    _write(make_ds(n_time=10), folder / "a.nc")
+    from fngft.io import resolve_sources
+
+    assert len(resolve_sources(str(folder / "*.nc"))) == 1
+
+
+def test_more_config_validation(tmp_path):
+    from dataclasses import replace
+    from fngft.config import validate_config
+
+    with pytest.raises(ValueError, match="level_dim"):
+        load_config(_config_file(tmp_path, {"level_value": 500}))
+    with pytest.raises(ValueError, match="region.lat_min"):
+        load_config(_config_file(tmp_path, {"region": {"lat_min": "5", "lat_max": 40}}))
+    assert load_config(_config_file(tmp_path, {"region": {"lat_min": None, "lat_max": 40}})).data.region == {"lat_max": 40}
+    with pytest.raises(ValueError, match="coarsen"):
+        load_config(_config_file(tmp_path, {"coarsen": 2.5}))
+    yearly = load_config(_config_file(tmp_path, {"train_start": 2018, "train_end": 2019, "val_start": 2020, "val_end": 2020}))
+    assert yearly.data.train_start == "2018-01-01T00:00:00" and yearly.data.val_end.startswith("2020-12-31T23:59:59")
+    cfg_ok = load_config(_config_file(tmp_path, {}))
+    with pytest.raises(ValueError, match="epochs"):
+        validate_config(replace(cfg_ok, training=replace(cfg_ok.training, epochs=0)))
