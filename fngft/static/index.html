@@ -16,6 +16,7 @@
     --text-muted: #7a7974;
     --accent: #2a78d6;
     --good: #0ca30c;
+    --warning: #fab219;
     --critical: #d03b3b;
   }
   @media (prefers-color-scheme: dark) {
@@ -74,6 +75,9 @@
          box-shadow: 0 2px 8px rgba(0,0,0,.15); display: none; z-index: 2; font-variant-numeric: tabular-nums; }
   .msg { color: var(--text-secondary); font-size: 14px; }
   .err { color: var(--critical); font-size: 14px; overflow-wrap: anywhere; }
+  .warn { margin-top: 8px; padding: 8px 12px; border-radius: 6px; font-size: 14px; color: var(--text-primary);
+          border: 1px solid var(--warning); background: color-mix(in srgb, var(--warning) 14%, var(--surface-1)); }
+  .warn::before { content: "\26A0\FE0E  Warning: "; font-weight: 600; }
   code { font-size: 13px; }
 </style>
 </head>
@@ -101,7 +105,8 @@
       <label>Variable <select id="var"></select></label>
       <label>Lead time <select id="lead"></select></label>
     </div>
-    <div id="fc-msg" class="msg">Runs the model on the newest file in the server's configured data source.</div>
+    <div id="fc-msg" class="msg">Runs the model on the most recent data in the server's configured data source.</div>
+    <div id="fc-warn" class="warn" role="alert" hidden></div>
     <div class="maps" id="maps" hidden>
       <figure><figcaption id="cap-field">Forecast</figcaption>
         <div class="canvas-wrap"><canvas class="map" id="c-field"></canvas><div class="tip"></div></div>
@@ -136,7 +141,14 @@ function ramp(stops, t) {
   const a = hex(stops[i]), b = hex(stops[i + 1]);
   return a.map((v, k) => Math.round(v + (b[k] - v) * f));
 }
-const fmt = v => (Math.abs(v) >= 1000 || (Math.abs(v) < 0.01 && v !== 0)) ? v.toExponential(2) : v.toFixed(2);
+// Significant-digit formatting; `span` (the colour-bar range) adds digits for fields that vary only slightly.
+function fmt(v, span) {
+  if (v === 0) return "0";
+  const a = Math.abs(v);
+  if (a >= 1e5 || a < 1e-4) return v.toExponential(2);
+  const sig = span > 0 ? Math.max(4, Math.ceil(Math.log10(a / span)) + 2) : 4;
+  return v.toPrecision(Math.min(sig, 10));
+}
 
 function drawMap(id, field, signed, label, unit) {
   const canvas = document.getElementById("c-" + id);
@@ -158,11 +170,11 @@ function drawMap(id, field, signed, label, unit) {
   ctx.putImageData(img, 0, 0);
   const bar = document.getElementById("bar-" + id);
   bar.innerHTML = "";
-  const lab = document.createElement("span"); lab.textContent = fmt(lo);
+  const lab = document.createElement("span"); lab.textContent = fmt(lo, hi - lo);
   const cb = document.createElement("canvas"); cb.width = 128; cb.height = 1;
   const g = cb.getContext("2d");
   for (let i = 0; i < 128; i++) { const [R, G, B] = ramp(stops, i / 127); g.fillStyle = `rgb(${R},${G},${B})`; g.fillRect(i, 0, 1, 1); }
-  const lab2 = document.createElement("span"); lab2.textContent = fmt(hi) + (unit ? " " + unit : "");
+  const lab2 = document.createElement("span"); lab2.textContent = fmt(hi, hi - lo) + (unit ? " " + unit : "");
   bar.append(lab, cb, lab2);
   const tip = canvas.parentElement.querySelector(".tip");
   canvas.onmousemove = ev => {
@@ -240,6 +252,9 @@ document.getElementById("run").onclick = async () => {
     vs.innerHTML = Object.keys(data.fields).map(k => `<option value="${k}">${k}</option>`).join("");
     ls.innerHTML = data.times.map((t, i) => `<option value="${i}">+${(i + 1) * data.dt_hours} h</option>`).join("");
     msg.textContent = `Analysis ${data.analysis_time.replace("T", " ").slice(0, 16)} UTC from ${data.source}. Hover a map for values.`;
+    const warn = document.getElementById("fc-warn");
+    warn.hidden = !(data.warnings && data.warnings.length);
+    warn.textContent = (data.warnings || []).join(" ");
     document.getElementById("maps").hidden = false;
     render();
   } catch (e) {

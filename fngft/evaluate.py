@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from .config import load_config
 from .io import open_weather_dataset
 from .model import FNGFTWeatherModel, build_model
-from .preprocess import Standardizer, TemporalWindowDataset, prepare_dataset
+from .preprocess import Standardizer, TemporalWindowDataset, area_weights, prepare_dataset, time_slice_indices
 from .schema import CANONICAL_CHANNELS
 from .train import resolve_device
 
@@ -46,8 +46,8 @@ def anomaly_correlation(pred: np.ndarray, target: np.ndarray) -> float:
 
 
 def latitude_weights(lat: np.ndarray) -> np.ndarray:
-    w = np.cos(np.deg2rad(lat.astype(np.float64))).clip(min=0.0)
-    return w / w.mean() if w.mean() > 0 else np.ones_like(w)
+    """Grid-cell area weights (kept under the old name for compatibility)."""
+    return area_weights(lat)
 
 
 def evaluate(
@@ -62,9 +62,11 @@ def evaluate(
 ) -> dict:
     """Score a checkpoint on a held-out split against persistence and climatology baselines.
 
-    Errors are latitude-weighted (cos(lat)). RMSE/MAE are reported per variable in physical units and
-    overall in standardized units; skill_vs_persistence = 1 - RMSE_model / RMSE_persistence (> 0 is better).
-    The anomaly correlation (acc) uses the training-period mean as climatology.
+    Errors are area-weighted (grid-cell area, so pole rows count with their small but non-zero area).
+    RMSE/MAE are reported per variable in physical units and overall in standardized units;
+    skill_vs_persistence = 1 - RMSE_model / RMSE_persistence (> 0 is better). Climatology is the
+    training-period mean of every grid point; rmse_climatology is the error of forecasting that map and
+    acc is the anomaly correlation against it.
     """
     cfg = load_config(config_path)
     dev = resolve_device(device)
@@ -74,6 +76,8 @@ def evaluate(
         raw, times, lat, lon = prepare_dataset(ds, cfg.data, crop_to_splits=True)
     state = normalizer.transform(raw)
     del raw
+    tr_lo, tr_hi = time_slice_indices(times, cfg.data.train_start, cfg.data.train_end)
+    clim = torch.from_numpy(state[tr_lo:tr_hi].mean(axis=0, dtype=np.float64)).unsqueeze(0)  # [1,4,lat,lon]
     ranges = {
         "train": (cfg.data.train_start, cfg.data.train_end),
         "val": (cfg.data.val_start, cfg.data.val_end),
@@ -104,13 +108,14 @@ def evaluate(
             last = history[:, -1].to(torch.float64)
             for lead in range(steps):
                 p, t = pred[:, lead], future[:, lead]
+                pa, ta = p - clim, t - clim
                 sums["se"][lead] += ((p - t) ** 2 * w).sum(dim=(0, 2, 3))
                 sums["ae"][lead] += ((p - t).abs() * w).sum(dim=(0, 2, 3))
                 sums["se_pers"][lead] += ((last - t) ** 2 * w).sum(dim=(0, 2, 3))
-                sums["se_clim"][lead] += (t**2 * w).sum(dim=(0, 2, 3))
-                sums["pt"][lead] += (p * t * w).sum(dim=(0, 2, 3))
-                sums["pp"][lead] += (p * p * w).sum(dim=(0, 2, 3))
-                sums["tt"][lead] += (t * t * w).sum(dim=(0, 2, 3))
+                sums["se_clim"][lead] += (ta**2 * w).sum(dim=(0, 2, 3))
+                sums["pt"][lead] += (pa * ta * w).sum(dim=(0, 2, 3))
+                sums["pp"][lead] += (pa * pa * w).sum(dim=(0, 2, 3))
+                sums["tt"][lead] += (ta * ta * w).sum(dim=(0, 2, 3))
             n_cells += history.shape[0] * lat.size * lon.size
             for key in orders:
                 orders[key].append(float(info[key].mean().cpu()))

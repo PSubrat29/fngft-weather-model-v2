@@ -24,10 +24,14 @@ MODEL_PATH=artifacts/fngft_real.pt FNGFT_CONFIG=configs/my_data.yaml uvicorn fng
 - `GET /model-info` — history, `dt_hours`, grid, variables, units, normalizer, training history,
   provenance.
 - `POST /forecast` — body `{history: [time,4,lat,lon], lat?, lon?, steps: 1..24, units}`;
-  `units` is `standardized` (default, training z-scores) or `physical`. `lat`/`lon` default to the
-  training grid. Returns standardized and physical forecasts plus alpha/beta/kappa maps.
-- `GET /forecast-latest?steps=N&max_size=M` — forecast from the newest file of the deployment's data
-  source; fields are subsampled to at most `M` points per axis for display.
+  `units` is `standardized` (default, training z-scores) or `physical`. `lat`/`lon` may be ascending
+  or descending (e.g. ERA5's north-to-south order): the grid is reordered for the model and the
+  response comes back in the order you sent. Without `lat`/`lon` the training grid is assumed, which is
+  ascending (south to north). Non-monotonic coordinates or ragged arrays return 422. Returns
+  standardized and physical forecasts, alpha/beta/kappa maps, and `warnings` /
+  `first_unphysical_step` from the plausibility check.
+- `GET /forecast-latest?steps=N&max_size=M` — forecast from the most recent data of the deployment's
+  data source; fields are subsampled to at most `M` points per axis for display; includes `warnings`.
 - `POST /reload` — reload `MODEL_PATH` after retraining.
 
 ## Security design

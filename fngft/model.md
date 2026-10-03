@@ -51,6 +51,26 @@ flux divergence was additionally divided by the Earth radius, so the learned par
 steps. On ERA5 the v0.2 settings gave a validation MSE 14× worse than persistence; the current
 defaults beat persistence within the first epoch.
 
+## Boundaries, humidity floor and multi-day stability
+
+Multi-day forecasts feed each prediction back as input. On real ERA5 the learned closure fed back
+unstably from the outermost latitude rows (where convolutions see padding and the physics is least
+accurate) and v0.3.0 forecasts reached thousands of m/s within 2–5 days. Three safeguards fix this:
+
+- `closure_boundary_rows` (default 1): the closure is switched off on the outermost latitude rows, and
+  on the outermost columns of non-periodic (regional) grids.
+- `boundary_mode` (default `persistence`): those rows keep their last state, i.e. a fixed boundary
+  condition; `physics` applies the physics branch alone there.
+- `q_min` (default 0): q is floored at this physical value after every step (set `null` if q is, for
+  example, a dewpoint in °C).
+
+Training with `rollout_steps: 2` (the default) further reduces drift. Measured on four real ERA5
+grids (64×32 with and without poles, 240×121 with poles at 6-hourly and hourly steps), 10-day
+(6-hourly) and 4-day (hourly) forecasts stay physically plausible (max wind 35–80 m/s, q ≥ 0); without
+the boundary mask the same models exceed 150 m/s after 2–9 days. See `AUDIT_REPORT.md`.
+
+`realtime.run_forecast` additionally flags any step that leaves the plausible range.
+
 ## Normalization buffers
 
 `state_mean` / `state_std` are saved in the state dict. `set_normalization` must be called before

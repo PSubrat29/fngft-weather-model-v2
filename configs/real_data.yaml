@@ -61,7 +61,7 @@ training:
   learning_rate: 0.001
   weight_decay: 0.0001
   grad_clip: 1.0
-  rollout_steps: 1
+  rollout_steps: 2            # 2-step training keeps multi-day forecasts stable (see AUDIT_REPORT.md)
   num_workers: 0
   max_train_windows: null
   max_val_windows: 512

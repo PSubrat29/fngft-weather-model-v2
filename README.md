@@ -20,8 +20,8 @@ autoregressive forecast  →  NetCDF / NPZ / HTTP API / web dashboard
 ```
 
 **New here? Read [`USER_GUIDE.md`](USER_GUIDE.md)** — it lists exactly what you need to do on your
-side, step by step. [`AUDIT_REPORT.md`](AUDIT_REPORT.md) lists what was broken in v0.2 and how it
-was fixed, including results on real ERA5 data.
+side, step by step. [`AUDIT_REPORT.md`](AUDIT_REPORT.md) lists what was broken in v0.2 and in the
+first fixed release, how it was fixed and verified, and the results on real ERA5 data.
 
 ## Install
 
@@ -65,7 +65,7 @@ python -m fngft evaluate --config configs/era5_sample.yaml --checkpoint artifact
 3. Train: `python -m fngft train --config configs/my_data.yaml`
 4. Evaluate against persistence/climatology:
    `python -m fngft evaluate --config configs/my_data.yaml --checkpoint artifacts/fngft_real.pt --split test --steps 4 --output artifacts/eval_test.json`
-5. Forecast from the newest file:
+5. Forecast from the most recent data:
    `python -m fngft forecast-latest --config configs/my_data.yaml --checkpoint artifacts/fngft_real.pt --steps 6 --output artifacts/latest_forecast.nc`
 
 `python -m fngft` and the installed `fngft` command are the same CLI (`python -m fngft.cli` also works).
@@ -100,7 +100,7 @@ u/v/theta/q and alpha/beta/kappa). Interactive API docs are at `/docs`.
 | `GET /health` | service and model status (the service stays up when the checkpoint is missing) |
 | `GET /model-info` | grid, variables, time step, training history, provenance |
 | `POST /forecast` | forecast from a posted history (`units`: `standardized` or `physical`) |
-| `GET /forecast-latest?steps=N` | forecast from the newest file in the configured data source |
+| `GET /forecast-latest?steps=N` | forecast from the most recent data in the configured data source |
 | `POST /reload` | reload the checkpoint after retraining |
 
 Docker: `docker build -t fngft .` then
@@ -120,8 +120,10 @@ Docker: `docker build -t fngft .` then
 
 This is a **research prototype**, not an operational NWP system. The physics branch is a reduced
 transport proxy (no pressure gradient, radiation, moist physics or data assimilation). The fractional
-operator is an FFT approximation (latitude mirrored, longitude periodic for global grids). Forecasts
-must not replace meteorological review for high-impact decisions — see [`GOVERNANCE.md`](GOVERNANCE.md).
+operator is an FFT approximation (latitude mirrored, longitude periodic for global grids). On the
+ERA5 sample the forecast beats persistence for all variables up to about 3 days; longer forecasts stay
+physically bounded but lose skill, and every forecast step is checked for plausibility. Forecasts must
+not replace meteorological review for high-impact decisions — see [`GOVERNANCE.md`](GOVERNANCE.md).
 
 The research questions this stage supports:
 

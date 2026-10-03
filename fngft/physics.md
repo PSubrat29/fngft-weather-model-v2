@@ -22,7 +22,9 @@ direction.)
 3. **Stratification** `dv -= s · dθ/dy` and **scalar diffusion**, explicit.
 
 Longitude is periodic for global grids and one-sided/clamped for regional grids; latitude edges are
-clamped.
+clamped. Rows that lie on a pole (lat = ±90, as in every global Copernicus ERA5 file) get no zonal
+displacement: the row is a single point, and dividing by cos(lat) ≈ 0 there would move departure points
+hundreds of columns and scramble the row (v0.3.0 bug, physics 40× worse than persistence there).
 
 ## Why Coriolis is off by default
 

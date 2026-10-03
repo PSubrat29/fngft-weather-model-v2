@@ -9,7 +9,7 @@ import torch
 from torch.utils.data import Dataset
 import xarray as xr
 
-from .config import DataConfig
+from .config import DataConfig, split_ranges
 from .schema import CANONICAL_CHANNELS, NS_PER_HOUR, ensure_finite, is_global_longitude, time_values_ns, validate_dataset
 
 
@@ -28,9 +28,11 @@ class Standardizer:
         return cls(mean.astype(np.float32), std.astype(np.float32))
 
     def transform(self, state: np.ndarray) -> np.ndarray:
-        out = (state - self.mean[None, :, None, None]) / self.std[None, :, None, None]
+        out = np.array(state, dtype=np.float32, copy=True)
+        out -= self.mean[None, :, None, None]
+        out /= self.std[None, :, None, None]
         ensure_finite(out, "standardized state")
-        return out.astype(np.float32)
+        return out
 
     def inverse(self, state: np.ndarray) -> np.ndarray:
         return state * self.std[None, :, None, None] + self.mean[None, :, None, None]
@@ -44,11 +46,39 @@ class Standardizer:
 
 
 def _split_bounds(config: DataConfig) -> tuple[Optional[str], Optional[str]]:
-    starts = [s for s in (config.train_start, config.val_start, config.test_start) if s]
-    ends = [e for e in (config.train_end, config.val_end, config.test_end) if e]
-    lo = min(starts, key=lambda s: np.datetime64(s, "ns")) if starts else None
-    hi = max(ends, key=lambda e: np.datetime64(e, "ns")) if ends else None
+    """Overall time span of the configured splits; an open side (null start/end) stays unbounded."""
+    ranges = list(split_ranges(config).values())
+    if not ranges:
+        return None, None
+    lo = None if any(s is None for s, _ in ranges) else min((s for s, _ in ranges), key=lambda v: np.datetime64(v, "ns"))
+    hi = None if any(e is None for _, e in ranges) else max((e for _, e in ranges), key=lambda v: np.datetime64(v, "ns"))
     return lo, hi
+
+
+def split_boundaries(times: np.ndarray, config: DataConfig) -> list[int]:
+    """Index positions where a configured split starts or ends (used to keep gap filling inside a split)."""
+    cuts = {0, len(times)}
+    for start, end in split_ranges(config).values():
+        try:
+            lo, hi = time_slice_indices(times, start, end)
+        except ValueError:
+            continue
+        cuts.update((lo, hi))
+    return sorted(cuts)
+
+
+def choose_level(ds: xr.Dataset, config: DataConfig) -> float:
+    """Return the level coordinate value matching data.level_value (within 1%), or raise a clear error."""
+    levels = np.asarray(ds[config.level_dim].values, dtype=float).reshape(-1)
+    target = float(config.level_value)
+    chosen = float(levels[np.argmin(np.abs(levels - target))])
+    if abs(chosen - target) > max(1e-6, 0.01 * abs(target)):
+        units = ds[config.level_dim].attrs.get("units", "unknown")
+        raise ValueError(
+            f"data.level_value={config.level_value:g} is not one of the {config.level_dim} values {levels.tolist()} "
+            f"(units: {units}); the nearest is {chosen:g}. Check the units: pressure in Pa needs 85000 for 850 hPa."
+        )
+    return chosen
 
 
 def _select_region(work: xr.Dataset, config: DataConfig) -> xr.Dataset:
@@ -84,16 +114,18 @@ def _fill_missing(array: np.ndarray, fill_value: float) -> np.ndarray:
     return out
 
 
-def prepare_dataset(
+def select_dataset(
     ds: xr.Dataset,
     config: DataConfig,
     *,
     crop_to_splits: bool = False,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Validate and convert an xarray dataset to ``state[time, 4, lat, lon]`` plus coordinates.
+    tail_steps: Optional[int] = None,
+) -> tuple[xr.Dataset, dict]:
+    """Validate and apply all configured selections lazily (no data is loaded).
 
-    Latitude and longitude are returned in ascending order. With ``crop_to_splits`` only the time span
-    covered by the configured train/val/test ranges is loaded (saves memory for long archives).
+    Steps: keep the four mapped variables, select the level, optionally crop to the configured split
+    period or keep only the last ``tail_steps`` time steps, crop the region, sort latitude/longitude
+    ascending and coarsen. Returns the selected dataset and a dict with the chosen level.
     """
     validate_dataset(
         ds,
@@ -103,11 +135,13 @@ def prepare_dataset(
         variables=config.variables,
         level_dim=config.level_dim,
     )
+    info: dict = {"level": None}
     work = ds[[config.variables[c] for c in CANONICAL_CHANNELS]]
     if config.level_dim:
         if config.level_value is None:
             raise ValueError("level_value is required when level_dim is set")
-        work = work.sel({config.level_dim: config.level_value}, method="nearest")
+        info["level"] = choose_level(work, config)
+        work = work.sel({config.level_dim: info["level"]})
         if config.level_dim in work.coords:
             work = work.drop_vars(config.level_dim)
     if crop_to_splits:
@@ -119,41 +153,108 @@ def prepare_dataset(
                     f"The configured train/val/test ranges ({lo} .. {hi}) select fewer than 2 time steps. "
                     f"Dataset covers {ds[config.time_dim].values[0]} .. {ds[config.time_dim].values[-1]}."
                 )
+    if tail_steps is not None:
+        work = work.isel({config.time_dim: slice(-int(tail_steps), None)})
     work = _select_region(work, config)
     work = work.sortby(config.lat_dim).sortby(config.lon_dim)
     factor = int(config.coarsen)
     if factor > 1:
         if work.sizes[config.lat_dim] < 2 * factor or work.sizes[config.lon_dim] < 2 * factor:
             raise ValueError(f"data.coarsen={factor} leaves fewer than 2 grid points")
+        try:  # with dask, block-average chunk by chunk instead of loading the full-resolution field
+            work = work.chunk({config.time_dim: 64})
+        except Exception:
+            pass
         work = work.coarsen({config.lat_dim: factor, config.lon_dim: factor}, boundary="trim").mean()
+    return work, info
 
+
+def _channel_array(work: xr.Dataset, config: DataConfig, canonical: str) -> xr.DataArray:
+    da = work[config.variables[canonical]]
+    extra = [d for d in da.dims if d not in (config.time_dim, config.lat_dim, config.lon_dim)]
+    if extra:
+        da = da.squeeze(extra, drop=True)
+    return da.transpose(config.time_dim, config.lat_dim, config.lon_dim)
+
+
+def state_from_selection(work: xr.Dataset, config: DataConfig) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Load a dataset returned by ``select_dataset`` into ``state[time, 4, lat, lon]`` (fills NaNs if configured)."""
     times = np.asarray(work[config.time_dim].values)
-    if config.missing_values == "interpolate":
-        train_lo, train_hi = 0, len(times)
-        if config.train_start or config.train_end:
-            try:
-                train_lo, train_hi = time_slice_indices(times, config.train_start, config.train_end)
-            except ValueError:
-                pass
-    arrays = []
-    for canonical in CANONICAL_CHANNELS:
-        da = work[config.variables[canonical]]
-        extra = [d for d in da.dims if d not in (config.time_dim, config.lat_dim, config.lon_dim)]
-        if extra:
-            da = da.squeeze(extra, drop=True)
-        da = da.transpose(config.time_dim, config.lat_dim, config.lon_dim)
-        values = np.asarray(da.values, dtype=np.float32)
-        if config.missing_values == "interpolate":
-            train_part = values[train_lo:train_hi]
-            finite = train_part[np.isfinite(train_part)]
-            fill = float(finite.mean()) if finite.size else 0.0
-            values = _fill_missing(values, fill)
-        arrays.append(values)
-    state = np.stack(arrays, axis=1)
-    ensure_finite(state, "state")
     lat = np.asarray(work[config.lat_dim].values, dtype=np.float32)
     lon = np.asarray(work[config.lon_dim].values, dtype=np.float32)
+    state = np.empty((len(times), len(CANONICAL_CHANNELS), lat.size, lon.size), dtype=np.float32)
+    if config.missing_values == "interpolate":
+        cuts = split_boundaries(times, config)
+        train_lo, train_hi = 0, len(times)
+        try:
+            train_lo, train_hi = time_slice_indices(times, config.train_start, config.train_end)
+        except ValueError:
+            pass
+    for c, canonical in enumerate(CANONICAL_CHANNELS):
+        state[:, c] = _channel_array(work, config, canonical).values
+        if config.missing_values == "interpolate" and not np.isfinite(state[:, c]).all():
+            train_part = state[train_lo:train_hi, c]
+            finite = train_part[np.isfinite(train_part)]
+            fill = float(finite.mean()) if finite.size else 0.0
+            # Fill inside each split separately so no split borrows values from another.
+            for a, b in zip(cuts[:-1], cuts[1:]):
+                state[a:b, c] = _fill_missing(state[a:b, c], fill)
+    ensure_finite(state, "state")
     return state, times, lat, lon
+
+
+def prepare_dataset(
+    ds: xr.Dataset,
+    config: DataConfig,
+    *,
+    crop_to_splits: bool = False,
+    tail_steps: Optional[int] = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Validate and convert an xarray dataset to ``state[time, 4, lat, lon]`` plus coordinates.
+
+    Latitude and longitude are returned in ascending order. With ``crop_to_splits`` only the time span
+    covered by the configured train/val/test ranges is loaded (saves memory for long archives); with
+    ``tail_steps`` only the most recent time steps are loaded (real-time forecasting).
+    """
+    work, _ = select_dataset(ds, config, crop_to_splits=crop_to_splits, tail_steps=tail_steps)
+    return state_from_selection(work, config)
+
+
+def trim_incomplete_tail(work: xr.Dataset, config: DataConfig) -> xr.Dataset:
+    """Drop trailing time steps where any variable is entirely missing.
+
+    When files of different variables end at different times (e.g. one file per variable updated
+    separately), the combined dataset ends with time steps that exist for some variables only.
+    """
+    incomplete = np.zeros(work.sizes[config.time_dim], dtype=bool)
+    for canonical in CANONICAL_CHANNELS:
+        da = _channel_array(work, config, canonical)
+        incomplete |= np.asarray(da.isnull().all(dim=[config.lat_dim, config.lon_dim]).values)
+    complete = np.flatnonzero(~incomplete)
+    if complete.size == 0:
+        raise ValueError("None of the most recent time steps contains all four variables")
+    return work.isel({config.time_dim: slice(0, int(complete[-1]) + 1)})
+
+
+def count_missing(work: xr.Dataset, config: DataConfig) -> int:
+    """Number of NaN/inf values in the selected variables (reads the data)."""
+    total = 0
+    for canonical in CANONICAL_CHANNELS:
+        da = _channel_array(work, config, canonical)
+        total += int((~np.isfinite(da)).sum().values)
+    return total
+
+
+def area_weights(lat: np.ndarray) -> np.ndarray:
+    """Grid-cell area weights per latitude row, normalised to mean 1 (non-zero on pole rows)."""
+    lat = np.asarray(lat, dtype=np.float64)
+    if lat.size < 2:
+        return np.ones_like(lat)
+    half = 0.5 * float(np.median(np.abs(np.diff(lat))))
+    upper = np.deg2rad(np.clip(lat + half, -90.0, 90.0))
+    lower = np.deg2rad(np.clip(lat - half, -90.0, 90.0))
+    w = np.abs(np.sin(upper) - np.sin(lower))
+    return w / w.mean() if w.mean() > 0 else np.ones_like(lat)
 
 
 def resolve_longitude_periodic(lon: np.ndarray, config: DataConfig) -> bool:

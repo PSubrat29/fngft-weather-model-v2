@@ -6,9 +6,16 @@ Defines the complete configuration contract and validates YAML files before any 
 
 ## Validation
 
-`load_config` rejects unknown keys (typos such as `sourse:` are reported with the list of allowed
-keys) and inconsistent values (alpha/beta bounds, `memory_dim` not divisible by `memory_heads`,
-`level_dim` without `level_value`, unknown `format`, …).
+`load_config` reads the file as UTF-8 (a Windows Notepad BOM is accepted) and rejects unknown keys
+(typos such as `sourse:` are reported with the list of allowed keys), null values for required keys,
+and inconsistent values (alpha/beta bounds, `memory_dim` not divisible by `memory_heads`,
+`level_dim` without `level_value`, unknown `format`, `epochs`/`batch_size` < 1, …).
+
+Split dates are normalised to timezone-naive UTC (`2020-01-01T05:30+05:30` becomes
+`2020-01-01T00:00:00`). A date without a time used as an end covers the whole period:
+`train_end: 2019-12-31` includes all of 31 December, `2019-12` all of December. A training range is required; a split whose start is after its end, or any
+two splits that overlap, are rejected so validation/test data cannot leak into training. A split may
+be open-ended (null start or end).
 
 ## `DataConfig`
 
@@ -32,11 +39,15 @@ Network sizes, history length, alpha/beta bounds, fractional basis, physics scal
 - `longitude_periodic` is resolved from the data during training and stored in the checkpoint.
 - Defaults `coriolis_scale: 0`, `closure_scale: 1`, `residual_scale: 1` come from real ERA5 tests; see
   `physics.md` and `model.md`.
+- `closure_boundary_rows` (1), `boundary_mode` (`persistence`) and `q_min` (0) keep multi-day forecasts
+  stable and physical; see `model.md`.
 
 ## `TrainingConfig`
 
-Batch size, epochs, learning rate, weight decay, gradient clipping, rollout length, window limits,
-seed, device, checkpoint path, `lr_schedule` (`cosine | constant`) and `early_stopping_patience`.
+Batch size, epochs, learning rate, weight decay, gradient clipping, rollout length (`rollout_steps`,
+default 2: the loss covers two autoregressive steps, which reduces multi-day drift at about twice the
+training time), window limits, seed, device, checkpoint path, `lr_schedule` (`cosine | constant`) and
+`early_stopping_patience`.
 
 ## Why this file matters
 

@@ -67,3 +67,32 @@ def test_untrained_model_is_finite_on_regional_grid():
     pred, _ = model(torch.randn(2, 3, 4, 10, 12), lat, lon, steps=4)
     assert pred.shape == (2, 4, 4, 10, 12)
     assert torch.isfinite(pred).all()
+
+
+def test_pole_rows_are_not_scrambled_by_zonal_wind():
+    lat = torch.linspace(-90.0, 90.0, 9)
+    lon = torch.arange(16, dtype=torch.float32) * 22.5
+    field = torch.randn(1, 2, 9, 16)
+    u = torch.full((1, 1, 9, 16), 20.0)
+    out = semi_lagrangian_advect(field, u, torch.zeros_like(u), lat, lon, 6 * 3600.0)
+    assert torch.allclose(out[:, :, 0], field[:, :, 0]) and torch.allclose(out[:, :, -1], field[:, :, -1])
+    assert not torch.allclose(out[:, :, 4], field[:, :, 4])  # interior rows still move
+
+
+def test_boundary_rows_and_humidity_floor():
+    cfg = ModelConfig(hidden=8, memory_dim=8, memory_heads=2, memory_layers=1, history=3, dt_hours=6.0, longitude_periodic=False)
+    model = FNGFTWeatherModel(cfg)
+    model.set_normalization([5.0, 0.0, 290.0, 0.005], [8.0, 6.0, 10.0, 0.004])
+    for layer in (model.closure.force, model.closure.scalar_flux):  # make the learned closure large
+        torch.nn.init.normal_(layer.weight, std=5.0)
+    lat = torch.linspace(5.0, 35.0, 10)
+    lon = torch.linspace(65.0, 100.0, 12)
+    hist = torch.randn(1, 3, 4, 10, 12)
+    pred, _ = model(hist, lat, lon, steps=1)
+    last = hist[:, -1]
+    # Boundary rows/columns keep the last state (u, v, theta; q is additionally floored at zero).
+    p, l = pred[0, 0, :3], last[0, :3]
+    assert torch.allclose(p[:, 0], l[:, 0]) and torch.allclose(p[:, -1], l[:, -1])
+    assert torch.allclose(p[:, :, 0], l[:, :, 0]) and torch.allclose(p[:, :, -1], l[:, :, -1])
+    q_physical = pred[0, 0, 3] * 0.004 + 0.005
+    assert q_physical.min() >= -1e-7

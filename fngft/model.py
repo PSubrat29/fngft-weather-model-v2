@@ -182,6 +182,22 @@ class FNGFTWeatherModel(nn.Module):
     def to_standardized(self, physical: Tensor) -> Tensor:
         return (physical - self.state_mean.view(1, -1, 1, 1)) / self.state_std.view(1, -1, 1, 1)
 
+    def _boundary_mask(self, ref: Tensor) -> Tensor:
+        """1 inside the domain, 0 on the outermost ``closure_boundary_rows`` rows (and columns if not periodic)."""
+        n = self.cfg.closure_boundary_rows
+        h, w = ref.shape[-2:]
+        mask = torch.ones(h, w, dtype=ref.dtype, device=ref.device)
+        if n > 0:
+            n_rows = min(n, max(h // 2 - 1, 0))
+            if n_rows:
+                mask[:n_rows] = 0.0
+                mask[-n_rows:] = 0.0
+            n_cols = min(n, max(w // 2 - 1, 0))
+            if not self.cfg.longitude_periodic and n_cols:
+                mask[:, :n_cols] = 0.0
+                mask[:, -n_cols:] = 0.0
+        return mask.view(1, 1, h, w)
+
     def step(self, history: Tensor, lat_deg: Tensor, lon_deg: Tensor) -> tuple[Tensor, Dict[str, Tensor]]:
         if history.ndim != 5:
             raise ValueError("history must have shape [batch,time,channel,lat,lon]")
@@ -193,7 +209,13 @@ class FNGFTWeatherModel(nn.Module):
         orders = self.order_head(history[:, -1], memory)
         closure, diagnostics = self.closure(history, memory, orders)
         physical = self.to_standardized(self.physics(self.to_physical(history[:, -1]), lat_deg, lon_deg))
-        next_state = physical + self.cfg.closure_scale * closure
+        mask = self._boundary_mask(closure)
+        next_state = physical + self.cfg.closure_scale * closure * mask
+        if self.cfg.boundary_mode == "persistence" and self.cfg.closure_boundary_rows > 0:
+            next_state = mask * next_state + (1.0 - mask) * history[:, -1]
+        if self.cfg.q_min is not None:
+            q_floor = (self.cfg.q_min - self.state_mean[3]) / self.state_std[3]
+            next_state = torch.cat([next_state[:, :3], torch.maximum(next_state[:, 3:4], q_floor)], dim=1)
         diagnostics.update(orders)
         diagnostics["memory"] = memory
         diagnostics["physical_state"] = physical

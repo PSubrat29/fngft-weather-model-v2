@@ -40,7 +40,7 @@ pytest -q
 python -m fngft demo
 ```
 
-Expected: `22 passed` (or more) and the last demo line `DEMO PASSED`. If either fails, send me the
+Expected: `38 passed` (or more) and the last demo line `DEMO PASSED`. If either fails, send me the
 full output.
 
 ## Step 4 — Optional: confirm on real public data (ERA5)
@@ -52,8 +52,8 @@ python -m fngft train --config configs\era5_sample.yaml
 python -m fngft evaluate --config configs\era5_sample.yaml --checkpoint artifacts\era5_sample.pt --steps 4
 ```
 
-Training takes about 5 minutes on a laptop CPU. In every epoch line `val_mse` should be well below
-`persistence_val_mse` (about half). The results I obtained are in `AUDIT_REPORT.md`.
+Training takes about 10 minutes on a laptop CPU. In every epoch line `val_mse` should be well below
+`persistence_val_mse` (about a third of it). The results I obtained are in `AUDIT_REPORT.md`.
 
 ## Step 5 — Describe your historical dataset to the model
 
@@ -79,8 +79,9 @@ Training takes about 5 minutes on a laptop CPU. In every epoch line `val_mse` sh
 python -m fngft inspect --config configs\my_data.yaml
 ```
 
-It prints the time range, time step, grid and units — or an error that names the fix (it lists the
-available dimension and variable names). Do not train until this succeeds. If you are unsure what your
+It prints the time range, time step, grid (after your region/coarsen settings), the selected level,
+units and the number of missing values — or an error that names the fix (it lists the available
+dimension and variable names, and tells you if a level value or missing data is the problem). Do not train until this succeeds. If you are unsure what your
 files contain, run `python -c "import xarray as xr; print(xr.open_dataset(r'D:\weather\history\one_file.nc'))"`
 and send me the output.
 
@@ -102,6 +103,10 @@ python -m fngft evaluate --config configs\my_data.yaml --checkpoint artifacts\fn
 
 For each variable and lead time the report gives RMSE in physical units, the persistence and
 climatology RMSE, `skill_vs_persistence` (positive = better than persistence) and anomaly correlation.
+
+Forecast lead time: on the ERA5 sample the model beats persistence for all variables up to about
+3 days. Every forecast is checked; if a step leaves the physically plausible range you get a
+`WARNING` line (CLI), a `warnings` field (API/NetCDF) and a banner on the dashboard.
 
 ## Step 9 — Forecast and view results
 

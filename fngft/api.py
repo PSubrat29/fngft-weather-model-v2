@@ -68,8 +68,10 @@ app = FastAPI(title="FNGFT-AI Real-Data Forecast API", version=__version__, life
 
 class ForecastRequest(BaseModel):
     history: List[List[List[List[float]]]] = Field(..., description="State history [time,4,lat,lon], channels u,v,theta,q")
-    lat: Optional[List[float]] = Field(None, description="Latitude coordinate (defaults to the training grid)")
-    lon: Optional[List[float]] = Field(None, description="Longitude coordinate (defaults to the training grid)")
+    lat: Optional[List[float]] = Field(
+        None, description="Latitude of the history rows, ascending or descending (defaults to the training grid, ascending)"
+    )
+    lon: Optional[List[float]] = Field(None, description="Longitude of the history columns (defaults to the training grid)")
     steps: int = Field(1, ge=1, le=24)
     units: Literal["standardized", "physical"] = Field(
         "standardized", description="Units of 'history': standardized (training z-scores) or physical (dataset units)"
@@ -138,10 +140,23 @@ def reload_model():
     return health()
 
 
+def _orientation(coord: np.ndarray, name: str) -> bool:
+    """True when ``coord`` is descending; raise 422 unless it is strictly monotonic."""
+    d = np.diff(coord)
+    if coord.size >= 2 and np.all(d > 0):
+        return False
+    if coord.size >= 2 and np.all(d < 0):
+        return True
+    raise HTTPException(status_code=422, detail=f"{name} must be strictly increasing or strictly decreasing")
+
+
 @app.post("/forecast")
 def forecast(req: ForecastRequest):
     model, normalizer = _require_model()
-    x = np.asarray(req.history, dtype=np.float32)
+    try:
+        x = np.asarray(req.history, dtype=np.float32)
+    except ValueError as exc:  # ragged nested lists
+        raise HTTPException(status_code=422, detail="history must have shape [time,4,lat,lon]") from exc
     if x.ndim != 4 or x.shape[1] != 4:
         raise HTTPException(status_code=422, detail="history must have shape [time,4,lat,lon]")
     if x.shape[0] != model.cfg.history:
@@ -155,22 +170,38 @@ def forecast(req: ForecastRequest):
         raise HTTPException(status_code=422, detail="lat/lon lengths do not match history grid")
     if lat.size < 2 or lon.size < 2:
         raise HTTPException(status_code=422, detail="the grid needs at least 2 latitude and 2 longitude points")
+    # The model was trained on south-to-north, west-to-east arrays: reorder, forecast, restore.
+    flip_lat, flip_lon = _orientation(lat, "lat"), _orientation(lon, "lon")
+    if flip_lat:
+        x, lat = x[:, :, ::-1, :], lat[::-1]
+    if flip_lon:
+        x, lon = x[:, :, :, ::-1], lon[::-1]
     physical = x if req.units == "physical" else normalizer.inverse(x)
     try:
-        result = run_forecast(model, normalizer, physical, lat, lon, req.steps, DEVICE)
+        result = run_forecast(model, normalizer, np.ascontiguousarray(physical), np.ascontiguousarray(lat), np.ascontiguousarray(lon), req.steps, DEVICE)
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    def restore(a: np.ndarray) -> np.ndarray:
+        if flip_lat:
+            a = a[..., ::-1, :]
+        if flip_lon:
+            a = a[..., ::-1]
+        return a
+
     return {
         "channels": list(CANONICAL_CHANNELS),
         "lead_hours": [model.cfg.dt_hours * (i + 1) for i in range(req.steps)],
-        "forecast_standardized": result["forecast_standardized"].tolist(),
-        "forecast_physical": result["forecast_physical"].tolist(),
+        "warnings": result["warnings"],
+        "first_unphysical_step": result["first_unphysical_step"],
+        "forecast_standardized": restore(result["forecast_standardized"]).tolist(),
+        "forecast_physical": restore(result["forecast_physical"]).tolist(),
         "alpha_mean": float(result["alpha"].mean()),
         "beta_mean": float(result["beta"].mean()),
         "kappa_mean": float(result["kappa"].mean()),
-        "alpha_map": result["alpha"].tolist(),
-        "beta_map": result["beta"].tolist(),
-        "kappa_map": result["kappa"].tolist(),
+        "alpha_map": restore(result["alpha"]).tolist(),
+        "beta_map": restore(result["beta"]).tolist(),
+        "kappa_map": restore(result["kappa"]).tolist(),
     }
 
 
@@ -179,7 +210,7 @@ def forecast_latest_endpoint(
     steps: int = Query(4, ge=1, le=24),
     max_size: int = Query(128, ge=8, le=1024, description="Fields are subsampled to at most this many points per axis"),
 ):
-    """Forecast from the newest file in the deployment's configured data source (FNGFT_CONFIG)."""
+    """Forecast from the most recent data in the deployment's configured data source (FNGFT_CONFIG)."""
     _require_model()
     if not CONFIG_PATH:
         raise HTTPException(status_code=404, detail="Set the FNGFT_CONFIG environment variable to enable latest-file forecasts")

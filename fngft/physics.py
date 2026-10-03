@@ -89,6 +89,10 @@ def semi_lagrangian_advect(
     coslat = torch.deg2rad(lat_deg).cos().clamp_min(MIN_COSLAT).view(1, 1, h, 1)
     di = v * dt_seconds / (EARTH_RADIUS_M * dphi)
     dj = u * dt_seconds / (EARTH_RADIUS_M * coslat * dlon)
+    # A row lying on a pole is a single point: longitude is undefined there, so no zonal displacement.
+    # (With the cos(lat) floor the departure would be hundreds of columns and scramble the row.)
+    on_pole = (0.5 * torch.pi - torch.deg2rad(lat_deg).abs()) < 0.25 * dphi.abs()
+    dj = dj.masked_fill(on_pole.view(1, 1, h, 1), 0.0)
     rows = torch.arange(h, device=fields.device, dtype=fields.dtype).view(1, 1, h, 1)
     cols = torch.arange(w, device=fields.device, dtype=fields.dtype).view(1, 1, 1, w)
     ii = (rows - di).clamp(0.0, h - 1.0)

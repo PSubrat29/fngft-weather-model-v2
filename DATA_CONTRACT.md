@@ -32,7 +32,9 @@ variables:
 ## Files
 
 `data.source` may be one file, a folder (all `.nc/.nc4/.grib/.grb/.grib2/.grb2` files are combined
-along time), a glob pattern, or a Zarr store. Split archives (one file per year/month) work directly.
+by their coordinates), a glob pattern, or a Zarr store. Archives split by time (one file per
+year/month/day) and by variable (one file per variable) work directly, for training and for
+`forecast-latest`.
 
 ## Grid
 
@@ -55,12 +57,16 @@ valid. Document the choice for each experiment.
 
 ## Vertical data
 
-For a multi-level dataset set `level_dim` and `level_value` to choose one level (nearest match).
+For a multi-level dataset set `level_dim` and `level_value` to choose one level. The value must match
+a level within 1% (in the file's units: pressure in Pa needs `85000` for 850 hPa); the chosen level is
+printed and stored in the checkpoint.
 Variables without the level dimension (e.g. 2 m fields) are kept as they are. Other extra dimensions
 must have size 1 (they are squeezed) or be removed beforehand.
 
 ## Memory
 
-The selected period is loaded into memory as float32: `time × 4 × lat × lon × 4 bytes`
-(e.g. 5 years hourly at 1° global ≈ 43 800 × 4 × 181 × 360 × 4 B ≈ 46 GB). Use 6-hourly data,
-`region`, `coarsen` or shorter periods to fit your machine.
+Training loads the selected period into memory as float32: `time × 4 × lat × lon × 4 bytes`, and the
+peak during loading and standardization is about 2× that (e.g. 5 years hourly at 1° global ≈
+43 800 × 4 × 181 × 360 × 4 B ≈ 46 GB state, ~90 GB peak). Use 6-hourly data, `region`, `coarsen`
+(applied chunk by chunk, so the full-resolution field is never loaded at once) or shorter periods to
+fit your machine. `forecast-latest` reads only the most recent time steps.

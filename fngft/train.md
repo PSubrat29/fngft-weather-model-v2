@@ -15,12 +15,12 @@ Trains the model against a real gridded dataset.
 6. Build history/future windows (gaps skipped).
 7. Compute the **persistence baseline** on the validation split and print it.
 8. Train with AdamW (+ cosine learning-rate schedule), gradient clipping and an autoregressive rollout
-   of `rollout_steps`.
+   of `rollout_steps` (default 2).
 9. Validate each epoch, save the best checkpoint, stop early after `early_stopping_patience` epochs
    without improvement. A non-finite loss stops training with a clear message.
 
-Each epoch prints `val_mse` next to `persistence_val_mse`. The model is only useful when `val_mse`
-is clearly below the persistence value.
+Each epoch prints `val_mse` next to `persistence_val_mse`, both weighted by grid-cell area like
+`evaluate`. The model is only useful when `val_mse` is clearly below the persistence value.
 
 ## Checkpoint contents
 

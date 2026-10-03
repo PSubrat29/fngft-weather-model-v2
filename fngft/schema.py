@@ -30,6 +30,9 @@ class DatasetProfile:
     time_gaps: int = 0
     longitude_global: bool = False
     units: Dict[str, Optional[str]] = field(default_factory=dict)
+    selected_level: Optional[float] = None
+    longitude_periodic: Optional[bool] = None
+    missing_value_count: Optional[int] = None
 
 
 def require_channels(mapping: Dict[str, str]) -> None:
@@ -122,6 +125,12 @@ def validate_dataset(
         for dim in da.dims:
             if dim in (time_dim, lat_dim, lon_dim) or dim == level_dim or da.sizes[dim] == 1:
                 continue
+            if dim == "expver":
+                raise ValueError(
+                    f"Variable '{name}' has an 'expver' dimension (ERA5 final data mixed with preliminary ERA5T, as "
+                    "delivered by the old Copernicus CDS). It is not a vertical level. Merge it before use, e.g. "
+                    "ds = ds.sel(expver=1).combine_first(ds.sel(expver=5)), and save the result."
+                )
             raise ValueError(
                 f"Variable '{name}' has extra dimension '{dim}' of size {da.sizes[dim]}. "
                 "Set data.level_dim and data.level_value to select one level, or reduce that dimension beforehand."
