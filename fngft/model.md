@@ -70,7 +70,7 @@ accurate) and v0.3.0 forecasts reached thousands of m/s within 2–5 days. Three
 - `q_min` (default 0): q is floored at this physical value after every step (set `null` if q is, for
   example, a dewpoint in °C).
 
-Training with `rollout_steps: 2` (the default) further reduces drift. Measured on four real ERA5
+Training with `rollout_steps: 2` (the default; about 6 for hourly data) further reduces drift. Measured on four real ERA5
 grids (64×32 with and without poles, 240×121 with poles at 6-hourly and hourly steps), 10-day
 (6-hourly) and 4-day (hourly) forecasts stay physically plausible (max wind 35–80 m/s, q ≥ 0); without
 the boundary mask the same models exceed 150 m/s after 2–9 days. See `AUDIT_REPORT.md`.

@@ -49,7 +49,7 @@ Network sizes, history length, alpha/beta bounds, fractional basis, physics scal
 
 Batch size, epochs, learning rate, weight decay, gradient clipping, rollout length (`rollout_steps`,
 default 2: the loss covers two autoregressive steps, which reduces multi-day drift at about twice the
-training time), window limits, seed, device, checkpoint path, `lr_schedule` (`cosine | constant`) and
+training time; for hourly data use about 6 so the rollout spans several hours), window limits, seed, device, checkpoint path, `lr_schedule` (`cosine | constant`) and
 `early_stopping_patience`.
 
 ## Why this file matters

@@ -72,6 +72,8 @@ Training takes about 10 minutes on a laptop CPU. In every epoch line `val_mse` s
    - large data: `region:` (e.g. `{lat_min: 5, lat_max: 40, lon_min: 65, lon_max: 100}`) and/or
      `coarsen: 2` or `4`.
    - data with gaps/NaNs: `missing_values: interpolate`.
+   - hourly data: in the `training:` section set `rollout_steps: 6` (slower training, much more stable
+     multi-day forecasts); keep the default 2 for 3- or 6-hourly data.
 
 ## Step 6 — Validate the dataset
 

@@ -157,8 +157,11 @@ training mean):
 **Usable lead time:** at this coarse resolution and model size the forecast beats persistence for all
 variables up to about 3 days, and for winds up to 10 days; temperature and humidity drift beyond about
 3 days (bounded, but worse than persistence and above climatology by day 10). On hourly data
-(1.5°, a 2-week training period) the forecast beats persistence up to about 1–1.5 days; humidity drift
-in longer hourly runs is flagged by the plausibility check. Forecasts beyond those leads should be
+(1.5°, a 2-week training period) the default 2-step training beats persistence up to about 1–1.5 days
+and its humidity drifts in longer runs (flagged by the plausibility check from about +58 h). Training
+with `rollout_steps: 6` fixes that: nothing flagged over 4 days (max wind 42 vs 90 m/s), winds better
+than persistence through +96 h, humidity error at +96 h 3.0 vs 3.6 g/kg; it costs 3.4× the training
+time and slightly weaker 1-hour skill. Use `rollout_steps: 6` for hourly data. Forecasts beyond those leads should be
 treated as experimental.
 
 Observation for the analysis phase: the learned `alpha` field sits at its lower bound
