@@ -20,8 +20,8 @@ autoregressive forecast  →  NetCDF / NPZ / HTTP API / web dashboard
 ```
 
 **New here? Read [`USER_GUIDE.md`](USER_GUIDE.md)** — it lists exactly what you need to do on your
-side, step by step. [`AUDIT_REPORT.md`](AUDIT_REPORT.md) lists what was broken in v0.2 and how it
-was fixed, including results on real ERA5 data.
+side, step by step. [`AUDIT_REPORT.md`](AUDIT_REPORT.md) lists what was broken in v0.2 and in the
+first fixed release, how it was fixed and verified, and the results on real ERA5 data.
 
 ## Install
 
@@ -120,8 +120,10 @@ Docker: `docker build -t fngft .` then
 
 This is a **research prototype**, not an operational NWP system. The physics branch is a reduced
 transport proxy (no pressure gradient, radiation, moist physics or data assimilation). The fractional
-operator is an FFT approximation (latitude mirrored, longitude periodic for global grids). Forecasts
-must not replace meteorological review for high-impact decisions — see [`GOVERNANCE.md`](GOVERNANCE.md).
+operator is an FFT approximation (latitude mirrored, longitude periodic for global grids). On the
+ERA5 sample the forecast beats persistence for all variables up to about 3 days; longer forecasts stay
+physically bounded but lose skill, and every forecast step is checked for plausibility. Forecasts must
+not replace meteorological review for high-impact decisions — see [`GOVERNANCE.md`](GOVERNANCE.md).
 
 The research questions this stage supports:
 

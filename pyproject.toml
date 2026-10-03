@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fngft-ai"
-version = "0.3.0"
+version = "0.3.1"
 description = "Real-data research prototype for the FNGFT-AI fractional weather architecture"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -66,6 +66,16 @@ class ModelConfig:
     residual_scale: float = 1.0
     # Resolved from the data grid during training and stored in the checkpoint.
     longitude_periodic: bool = True
+    # Number of boundary rows (and boundary columns of non-periodic grids) where the learned closure is
+    # switched off. Convolutions see padding there, and on real data the closure fed back unstably from
+    # these rows in multi-day forecasts. 0 disables.
+    closure_boundary_rows: int = 1
+    # What the masked boundary rows do each step: "persistence" keeps the last state (a fixed boundary
+    # condition), "physics" applies the physics branch only.
+    boundary_mode: str = "persistence"
+    # Physical lower bound for q applied after every step (0 for specific/relative humidity);
+    # null disables it, e.g. when q is a dewpoint in degC.
+    q_min: Optional[float] = 0.0
 
 
 @dataclass
@@ -75,7 +85,7 @@ class TrainingConfig:
     learning_rate: float = 2e-4
     weight_decay: float = 1e-4
     grad_clip: float = 1.0
-    rollout_steps: int = 1
+    rollout_steps: int = 2
     num_workers: int = 0
     max_train_windows: Optional[int] = None
     max_val_windows: Optional[int] = None
@@ -190,6 +200,10 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError("model.alpha_min/alpha_max must satisfy 0 < alpha_min < alpha_max")
     if not (0 < m.beta_min < m.beta_max):
         raise ValueError("model.beta_min/beta_max must satisfy 0 < beta_min < beta_max")
+    if m.closure_boundary_rows < 0:
+        raise ValueError("model.closure_boundary_rows must be >= 0")
+    if m.boundary_mode not in {"persistence", "physics"}:
+        raise ValueError("model.boundary_mode must be 'persistence' or 'physics'")
     if m.dt_hours is not None and m.dt_hours <= 0:
         raise ValueError("model.dt_hours must be positive (or null to infer it from the data)")
     if t.epochs < 1:

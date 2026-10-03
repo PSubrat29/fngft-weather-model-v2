@@ -146,3 +146,22 @@ def test_api_handles_descending_latitude_and_bad_input(trained, monkeypatch):
         assert client.post("/forecast", json={"history": ragged, "units": "physical"}).status_code == 422
         flat = client.post("/forecast", json={"history": hist.tolist(), "lat": [10.0] * len(lat), "lon": lon.tolist(), "units": "physical"})
         assert flat.status_code == 422
+
+
+def test_long_rollout_stays_plausible(trained):
+    from fngft.evaluate import load_checkpoint
+    from fngft.realtime import plausibility_warnings
+
+    model, normalizer, blob = load_checkpoint(str(trained["checkpoint"]), torch.device("cpu"))
+    ds = xr.open_dataset(trained["work"] / "data" / "demo.nc")
+    hist = np.stack([ds[v].values[-3:] for v in ("u10", "v10", "theta2m", "q2m")], axis=1).astype(np.float32)
+    x = torch.from_numpy(normalizer.transform(hist)).unsqueeze(0)
+    lat = torch.tensor(blob["grid"]["lat"])
+    lon = torch.tensor(blob["grid"]["lon"])
+    with torch.inference_mode():
+        pred, _ = model(x, lat, lon, steps=40)
+    std = pred[0].numpy()
+    phys = normalizer.inverse(std)
+    warnings, first_bad = plausibility_warnings(std, phys)
+    assert first_bad is None, warnings
+    assert phys[:, 3].min() >= -1e-6

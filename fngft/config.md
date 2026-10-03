@@ -38,11 +38,15 @@ Network sizes, history length, alpha/beta bounds, fractional basis, physics scal
 - `longitude_periodic` is resolved from the data during training and stored in the checkpoint.
 - Defaults `coriolis_scale: 0`, `closure_scale: 1`, `residual_scale: 1` come from real ERA5 tests; see
   `physics.md` and `model.md`.
+- `closure_boundary_rows` (1), `boundary_mode` (`persistence`) and `q_min` (0) keep multi-day forecasts
+  stable and physical; see `model.md`.
 
 ## `TrainingConfig`
 
-Batch size, epochs, learning rate, weight decay, gradient clipping, rollout length, window limits,
-seed, device, checkpoint path, `lr_schedule` (`cosine | constant`) and `early_stopping_patience`.
+Batch size, epochs, learning rate, weight decay, gradient clipping, rollout length (`rollout_steps`,
+default 2: the loss covers two autoregressive steps, which reduces multi-day drift at about twice the
+training time), window limits, seed, device, checkpoint path, `lr_schedule` (`cosine | constant`) and
+`early_stopping_patience`.
 
 ## Why this file matters
 
