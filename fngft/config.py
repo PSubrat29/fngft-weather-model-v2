@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime
+import re
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Dict, Optional
@@ -122,12 +124,25 @@ REQUIRED = {
 }
 
 
+_DATE_ONLY = re.compile(r"^\d{4}(-\d{2}){0,2}$")
+
+
 def _normalize_time(value, key: str) -> Optional[str]:
-    """Return a timezone-naive UTC ISO string (YAML may give str, date or datetime, with or without offset)."""
+    """Return a timezone-naive UTC ISO string (YAML may give str, date or datetime, with or without offset).
+
+    A date without a time of day used as an *end* means the end of that period, so
+    ``train_end: 2019-12-31`` includes the whole of 31 December (and ``2019-12`` all of December).
+    """
     if value is None or value == "":
         return None
+    is_date_only = (isinstance(value, datetime.date) and not isinstance(value, datetime.datetime)) or (
+        isinstance(value, str) and _DATE_ONLY.match(value.strip()) is not None
+    )
     try:
-        ts = pd.Timestamp(value)
+        if is_date_only and key.endswith("_end"):
+            ts = pd.Period(str(value).strip()).end_time
+        else:
+            ts = pd.Timestamp(value)
     except (ValueError, TypeError) as exc:
         raise ValueError(f"data.{key}={value!r} is not a valid date/time (use e.g. 2020-01-01 or 2020-01-01T06:00)") from exc
     if ts.tzinfo is not None:

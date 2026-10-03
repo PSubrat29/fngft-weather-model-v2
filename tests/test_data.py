@@ -222,3 +222,10 @@ def test_config_is_read_as_utf8(tmp_path):
     path = tmp_path / "c.yaml"
     path.write_bytes("﻿data:\n  source: data/Météo/era5.nc\n  train_start: '2020-01-01'\n".encode("utf-8"))
     assert load_config(path).data.source == "data/Météo/era5.nc"
+
+
+def test_date_only_end_covers_the_whole_period(tmp_path):
+    cfg_dates = load_config(_config_file(tmp_path, {"train_end": "2020-06-30", "val_start": "2020-07-01", "val_end": "2020-09"}))
+    assert cfg_dates.data.train_end.startswith("2020-06-30T23:59:59")
+    assert cfg_dates.data.val_end.startswith("2020-09-30T23:59:59")
+    assert cfg_dates.data.val_start == "2020-07-01T00:00:00"

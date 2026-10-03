@@ -12,7 +12,8 @@ and inconsistent values (alpha/beta bounds, `memory_dim` not divisible by `memor
 `level_dim` without `level_value`, unknown `format`, `epochs`/`batch_size` < 1, …).
 
 Split dates are normalised to timezone-naive UTC (`2020-01-01T05:30+05:30` becomes
-`2020-01-01T00:00:00`). A training range is required; a split whose start is after its end, or any
+`2020-01-01T00:00:00`). A date without a time used as an end covers the whole period:
+`train_end: 2019-12-31` includes all of 31 December, `2019-12` all of December. A training range is required; a split whose start is after its end, or any
 two splits that overlap, are rejected so validation/test data cannot leak into training. A split may
 be open-ended (null start or end).
 
